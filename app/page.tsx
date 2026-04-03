@@ -1,65 +1,481 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+import { useEffect, useState } from 'react';
+
+type Step = 'subjects' | 'uploads' | 'chat' | 'timetable' | 'dashboard' | 'custom';
+
+interface Subject {
+  id: number;
+  name: string;
+  strength: number | null;
+}
+
+export default function StudyPlannerApp() {
+  const [currentStep, setCurrentStep] = useState<Step>('subjects');
+
+useEffect(() => {
+  const saved = localStorage.getItem('step') as Step;
+  if (saved) setCurrentStep(saved);
+}, []);
+
+useEffect(() => {
+  localStorage.setItem('step', currentStep);
+}, [currentStep]);
+  
+  // Pre-populated subjects based on typical academic schedules
+  const [subjects, setSubjects] = useState<Subject[]>([
+    { id: 1, name: 'Mathematics', strength: null },
+    { id: 2, name: 'Politics', strength: null },
+    { id: 3, name: 'Literature', strength: null },
+  ]);
+
+  const [newSubjectName, setNewSubjectName] = useState('');
+  const [isAdding, setIsAdding] = useState(false);
+
+  const strengthColors = [
+    'bg-red-500 hover:bg-red-600', 
+    'bg-orange-400 hover:bg-orange-500', 
+    'bg-yellow-400 hover:bg-yellow-500', 
+    'bg-green-300 hover:bg-green-400', 
+    'bg-green-500 hover:bg-green-600'
+  ];
+
+  // Top Navigation Bar (Consistent across screens)
+  const renderHeader = () => (
+    <header className="bg-green-800 p-4 flex justify-between items-center shadow-md">
+      <div className="flex space-x-2">
+        <button 
+          onClick={() => setCurrentStep('dashboard')}
+          className={`px-4 py-2 text-sm font-semibold hover:cursor-pointer rounded ${currentStep === 'dashboard' ? 'bg-white text-green-800' : 'bg-green-700 text-white hover:bg-green-600'}`}
+        >
+          My Timetables
+        </button>
+        <button 
+          onClick={() => setCurrentStep('chat')}
+          className={`px-4 py-2 text-sm font-semibold hover:cursor-pointer rounded ${currentStep === 'chat' ? 'bg-white text-green-800' : 'bg-green-700 text-white hover:bg-green-600'}`}
+        >
+          Ask our AI-bot
+        </button>
+        <button 
+          onClick={() => setCurrentStep('subjects')}
+          className={`px-4 py-2 text-sm font-semibold hover:cursor-pointer rounded ${currentStep === 'subjects' ? 'bg-white text-green-800' : 'bg-green-700 text-white hover:bg-green-600'}`}
+        >
+          Grade your weaknesses
+        </button>
+      </div>
+    </header>
+  );
+
+  // Screen 1: Subject Setup
+  const renderSubjectsScreen = () => (
+    <div className="max-w-3xl mx-auto mt-10 p-6 bg-white border rounded shadow">
+      <div className="flex justify-between mb-6">
+        <h2 className="text-xl font-medium text-gray-800 max-w-lg">
+          Add your subjects and rate your weaknesses and strengths in each of them, to help our AI-bot get a better context.
+        </h2>
+        <div className='flex space-x-3'>
+          <button onClick={() => setCurrentStep('uploads')} className="px-6 py-2 bg-black text-white rounded hover:bg-gray-800 hover:cursor-pointer">
+          Upload Handouts
+        </button>
+        <button onClick= {()=>setIsAdding(true)}className='px-6 py-2 bg-green-500 text-white rounded hover:bg-green-800 hover:cursor-pointer'>
+          +add a subject
+        </button>
+        </div>
+        
+      </div>
+
+      <div className="mt-8">
+        <h3 className="text-lg text-gray-600 border-b pb-2 mb-4">Current Courses:</h3>
+        {isAdding && (
+        <div className="mt-4 flex space-x-2">
+          <input
+            type="text"
+            value={newSubjectName}
+            onChange={(e) => setNewSubjectName(e.target.value)}
+            placeholder="Enter subject name"
+            className="border p-2 rounded w-full text-black"
+          />
+          <button
+            onClick={() => {
+              if (newSubjectName.trim() === '') return;
+
+              const newSubject = {
+                id: subjects.length + 1,
+                name: newSubjectName,
+                strength: null
+              };
+
+              setSubjects([...subjects, newSubject]);
+              setNewSubjectName('');
+              setIsAdding(false);
+            }}
+            className="bg-blue-500 text-white px-4 rounded hover:cursor-pointer hover:bg-blue-700 active:bg-gray-600"
+          >
+            Add
+          </button>
+        </div>
+      )}
+        {subjects.map((subject, index) => (
+          <div key={subject.id} className="mb-6 p-4 bg-gray-50 rounded">
+            <p className="font-medium text-gray-700 mb-3">{index + 1}. {subject.name}</p>
+            <div className="flex space-x-2">
+              {strengthColors.map((colorClass, i) => (
+                <button
+                  key={i}
+                  className={`w-12 h-8 rounded ${colorClass} ${subject.strength === i ? 'ring-4 ring-gray-400 ring-offset-1' : ''}`}
+                  onClick={() => {
+                    const newSubjects = [...subjects];
+                    newSubjects[index].strength = i;
+                    setSubjects(newSubjects);
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  // Screen 2: Uploads
+  const renderUploadsScreen = () => (
+    <div className="max-w-3xl mx-auto mt-10 p-6 bg-white border rounded shadow">
+      <div className="flex justify-between items-center mb-6">
+        <button onClick={() => setCurrentStep('subjects')} className="px-6 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">
+          Back
+        </button>
+        <button onClick={() => setCurrentStep('chat')} className="px-6 py-2 bg-black text-white rounded hover:bg-gray-800">
+          Continue
+        </button>
+      </div>
+
+      <h2 className="text-lg text-gray-700 mb-6">
+        If you want to, you can upload course handouts of each of your courses.
+      </h2>
+
+      <div className="space-y-4 mt-8">
+        {subjects.map((subject, index) => (
+          <div key={subject.id} className="flex justify-between items-center p-4 bg-gray-50 border rounded">
+            <span className="font-medium text-gray-700">{index + 1}. {subject.name}</span>
+            <button className="px-4 py-2 bg-gray-300 text-gray-700 text-sm font-medium rounded hover:bg-gray-400 hover:cursor-pointer">
+              Upload
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+
+  interface Chats {
+    chat_id : string;
+    chat_name: string;
+    messages: {
+      role: 'user' | 'ai';
+      message: string;
+      type?: 'text' | 'timetable'
+    }[];
+  }
+
+  const [chats, setChats] = useState<Chats[]>([]);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [input, setInput] = useState('');
+
+  const createNewChat = () => {
+    const newChat: Chats = {
+      chat_id: Date.now().toString(),
+      chat_name: `chat new ${chats.length + 1}`,
+      messages: []
+    };
+
+    setChats([newChat, ...chats]);
+    setCurrentChatId(newChat.chat_id);
+  };
+
+  useEffect(()=>{
+    if(currentStep === 'chat' && chats.length === 0){
+      createNewChat();
+    }
+  },[currentStep, chats]);
+
+  const handleSend = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (!input.trim() || !currentChatId) return;
+
+    setChats(prevChats =>
+      prevChats.map(chat =>
+        chat.chat_id === currentChatId
+          ? {
+              ...chat,
+              messages: [
+                ...chat.messages,
+                { role: 'user', message: input },
+                {
+                  role: 'ai',
+                  message: "Generating schedule based on your strengths...",
+                  type: 'timetable'
+                }
+              ]
+            }
+          : chat
+      )
+    );
+
+    setInput("");
+  };
+
+  const currentChat = chats.find(c => c.chat_id === currentChatId);
+
+
+  const Regenerate = () => {
+    setChats(prevChats =>
+      prevChats.map(chat =>
+        chat.chat_id === currentChatId
+          ? {
+              ...chat,
+              messages: [
+                ...chat.messages,
+                {
+                  role: 'ai',
+                  message: "No worries, We are generating a new schedule for you....",
+                  type: 'timetable'
+                }
+              ]
+            }
+          : chat
+      ));
+  }
+
+  // Screen 3: AI Chat Interface
+  const renderChatScreen = () => (
+    <div className="flex h-[calc(100vh-72px)]">
+      {/* Sidebar */}
+      <div className='w-64 h-150 overflow-y-auto'>
+        <button 
+          onClick={createNewChat}
+          className="w-full py-2 bg-white border text-left px-4 rounded shadow-sm text-sm text-gray-700">
+          + new chat
+        </button>
+
+        <div className="mt-4 space-y-1">
+          {chats.map(chat => (
+            <button
+              key={chat.chat_id}
+              onClick={() => setCurrentChatId(chat.chat_id)}
+              className="w-full text-left px-4 py-2 text-sm text-gray-600 hover:bg-gray-300 rounded"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+              {chat.chat_name}
+            </button>
+          ))}
+    </div>
+
+    </div>
+
+      {/* Main Chat Area */}
+      <div className="flex-1 flex flex-col bg-white p-6 relative">
+        <div className="flex-1 overflow-y-auto space-y-6 pb-20">
+  {currentChat?.messages.map((msg, index) => (
+  <div
+    key={index}
+    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+  >
+    <div
+      className={`p-4 rounded-lg max-w-md shadow-sm ${
+        msg.role === 'user'
+          ? 'bg-gray-100 text-gray-800 rounded-tr-none'
+          : 'bg-gray-800 text-white rounded-tl-none'
+      }`}
+    >
+      {/* TEXT MESSAGE */}
+      {msg.type !== 'timetable' && <p>{msg.message}</p>}
+
+      {/* TIMETABLE MESSAGE */}
+      {msg.type === 'timetable' && (
+        <div>
+          <p className="mb-3 text-sm text-gray-200">
+            {msg.message}
           </p>
+
+          <div className="bg-gray-700 rounded p-2 grid grid-cols-5 gap-1 text-xs text-center">
+            <div className="bg-gray-600 p-1">Mon</div>
+            <div className="bg-gray-600 p-1">Tue</div>
+            <div className="bg-gray-600 p-1">Wed</div>
+            <div className="bg-gray-600 p-1">Thu</div>
+            <div className="bg-gray-600 p-1">Fri</div>
+
+            <div className="bg-red-400/50 p-1">Math</div>
+            <div className="bg-green-400/50 p-1">Pol</div>
+            <div className="bg-yellow-400/50 p-1">Lit</div>
+            <div className="bg-red-400/50 p-1">Math</div>
+            <div className="bg-green-400/50 p-1">Pol</div>
+          </div>
+
+          <div className="flex space-x-2 mt-3">
+            <button onClick = {()=> Regenerate()} 
+            className="px-3 py-1 text-xs bg-red-600 rounded hover:cursor-pointer hover:bg-red-700 active:bg-gray-500">
+              Reject
+            </button>
+            <button
+              onClick={() => setCurrentStep('timetable')}
+              className="px-3 py-1 text-xs bg-green-500 rounded hover:cursor-pointer hover:bg-green-700 active:bg-gray-500"
+            >
+              Accept
+            </button>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      )}
+    </div>
+  </div>
+))}
+</div>
+
+        {/* Input area */}
+        <div className="absolute bottom-6 left-6 right-6">
+          <div className="relative">
+              <input type="text" value={input} onChange={(e)=>setInput(e.target.value)} 
+              className="w-full border-2 bg-gray-200/70 backdrop-blur-md border-gray-300 text-black rounded-lg p-4 pr-12 shadow-sm focus:outline-none focus:border-green-500" placeholder="Type your message..." />
+              <button onClick = {(e) => handleSend(e)} className="absolute right-4 top-4 bg-black text-white p-1 rounded">
+                <span className="block w-4 h-4 text-center leading-4">→</span>
+              </button>
+          </div>
         </div>
+      </div>
+    </div>
+  );
+
+  // Screen 4: Timetable View
+  const subjectTopics = {
+  Mathematics: [
+    'Limits', 'Derivatives', 'Integrals', 'Matrices', 'Probability', 'Vectors'
+  ],
+  Literature: [
+    'Poetry Analysis', 'Shakespeare', 'Essays', 'Prose', 'Drama', 'Literary Devices'
+  ],
+  Politics: [
+    'Constitution', 'Ideologies', 'Elections', 'Public Policy', 'International Relations', 'Governance'
+  ]
+};
+
+const getRandomTopic = (subject: keyof typeof subjectTopics) => {
+  const topics = subjectTopics[subject];
+  return topics[Math.floor(Math.random() * topics.length)];
+};
+const subjos = ['Mathematics', 'Literature', 'Politics'];
+
+  type Cell = {
+      subject: string;
+      topic: string;
+      completed: boolean;
+  };
+    
+const [timetable, setTimetable] = useState<Cell[][]>(() => {
+  return Array.from({ length: 4 }, () =>
+    Array.from({ length: 5 }, () => {
+      const subjs = subjects[Math.floor(Math.random() * subjects.length)];
+      return {
+        subject: subjs.name,
+        topic: getRandomTopic(subjs.name as keyof typeof subjectTopics),
+        completed: false
+      };
+    })
+  );
+});
+
+  const toggleCell = (rowIndex: number, colIndex: number) => {
+  setTimetable(prev =>
+    prev.map((row, i) =>
+      row.map((cell, j) => {
+        if (i === rowIndex && j === colIndex) {
+          return { ...cell, completed: !cell.completed };
+        }
+        return cell;
+      })
+    )
+  );
+};
+
+
+  const renderTimetableView = () => (
+    <div className="max-w-4xl mx-auto mt-10 p-6 bg-white border rounded shadow">
+      <h2 className="text-xl font-medium text-gray-800 mb-2">We're glad you liked it!</h2>
+      <p className="text-gray-600 mb-6">You can track your progress by marking green when you finished a task, else we'll mark it red.</p>
+      
+      <div className="border rounded-lg overflow-hidden">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="bg-gray-500 border-b">
+                <th className="p-3 border-r font-medium">Time</th>
+                <th className="p-3 border-r font-medium">Mon</th>
+                <th className="p-3 border-r font-medium">Tue</th>
+                <th className="p-3 border-r font-medium">Wed</th>
+                <th className="p-3 border-r font-medium">Thu</th>
+                <th className="p-3 font-medium">Fri</th>
+            </tr>
+          </thead>
+
+            <tbody>
+  {timetable.map((row, i) => (
+    <tr key={i} className="border-b text-black last:border-0">
+      
+      <td className="p-3 border-r text-sm text-gray-500">
+        Block {i + 1}
+      </td>
+
+      {row.map((cell, j) => (
+        <td key={j} className="p-3 border-r">
+          <div
+            onClick={() => toggleCell(i, j)}
+            className={`w-full h-12 rounded text-xs p-1 cursor-pointer transition ${
+              cell.completed
+                ? 'bg-green-200'
+                : 'bg-gray-100 hover:bg-gray-200'
+            }`}
+          >
+            <p className="font-medium">{cell.subject}</p>
+            <p className="text-[10px]">{cell.topic}</p>
+          </div>
+        </td>
+      ))}
+      
+    </tr>
+  ))}
+</tbody>
+        </table>
+      </div>
+      
+      <div className="mt-8 flex justify-center space-x-8">
+          <div className="flex items-center space-x-2"><div className="w-4 h-4 text-black bg-green-400 rounded"></div><span className="text-sm text-black">Completed</span></div>
+          <div className="flex items-center space-x-2"><div className="w-4 h-4 text-black bg-red-400 rounded"></div><span className="text-sm text-black">Not Completed</span></div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-gray-100 font-sans">
+      {renderHeader()}
+      
+      <main>
+        {currentStep === 'subjects' && renderSubjectsScreen()}
+        {currentStep === 'uploads' && renderUploadsScreen()}
+        {currentStep === 'chat' && renderChatScreen()}
+        {currentStep === 'timetable' && renderTimetableView()}
+        
+        {/* Placeholder for dashboard screen from wireframe */}
+        {currentStep === 'dashboard' && (
+            <div className="max-w-4xl mx-auto mt-10 p-6 flex space-x-6">
+                <div onClick={() => setCurrentStep('timetable')} className="w-48 h-48 bg-white border rounded shadow flex flex-col items-center justify-center cursor-pointer hover:shadow-md transition">
+                  <div className="w-32 h-24 bg-gray-100 mb-2 border grid grid-cols-4 gap-0.5 p-1"><div className="bg-green-300"></div><div className="bg-red-300"></div></div>
+                  <span className="text-sm text-gray-600">My_timetable1</span>
+                </div>
+                <div className="w-48 h-48 border-2 border-dashed border-gray-300 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 transition text-gray-500">
+                  <span className="text-3xl mb-2">+</span>
+                  <span className="text-sm">Create Custom</span>
+                </div>
+            </div>
+        )}
       </main>
     </div>
   );
+
+
+  
 }
