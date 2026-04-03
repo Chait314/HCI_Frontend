@@ -40,6 +40,8 @@ useEffect(() => {
     'bg-green-500 hover:bg-green-600'
   ];
 
+  const strengthNumbers = [1,2,3,4,5]
+
   // Top Navigation Bar (Consistent across screens)
   const renderHeader = () => (
     <header className="bg-green-800 p-4 flex justify-between items-center shadow-md">
@@ -128,7 +130,9 @@ useEffect(() => {
                     newSubjects[index].strength = i;
                     setSubjects(newSubjects);
                   }}
-                />
+                >
+                  <nav className='text-black'>{strengthNumbers[i]}</nav>
+                </button>
               ))}
             </div>
           </div>
