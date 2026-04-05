@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
-type Step = 'subjects' | 'uploads' | 'chat' | 'timetable' | 'dashboard' | 'custom';
+type Step = 'subjects' | 'uploads' | 'chat' | 'timetable' | 'dashboard' | 'custom' | 'data'
 
 interface Subject {
   id: number;
@@ -42,6 +42,9 @@ useEffect(() => {
 
   const strengthNumbers = [1,2,3,4,5]
 
+
+
+
   // Top Navigation Bar (Consistent across screens)
   const renderHeader = () => (
     <header className="bg-green-800 p-4 flex justify-between items-center shadow-md">
@@ -62,8 +65,24 @@ useEffect(() => {
           onClick={() => setCurrentStep('subjects')}
           className={`px-4 py-2 text-sm font-semibold hover:cursor-pointer rounded ${currentStep === 'subjects' ? 'bg-white text-green-800' : 'bg-green-700 text-white hover:bg-green-600'}`}
         >
-          Grade your weaknesses
+          Add and rate your subjects
         </button>
+
+        <button 
+          onClick={() => setCurrentStep('uploads')}
+          className={`px-4 py-2 text-sm font-semibold hover:cursor-pointer rounded ${currentStep === 'uploads' ? 'bg-white text-green-800' : 'bg-green-700 text-white hover:bg-green-600'}`}
+        >
+          Upload your Handouts
+        </button>
+
+        <button 
+          onClick={() => setCurrentStep('data')}
+          className={`px-4 py-2 text-sm font-semibold hover:cursor-pointer rounded ${currentStep === 'data' ? 'bg-white text-green-800' : 'bg-green-700 text-white hover:bg-green-600'}`}
+        >
+          Your data with us
+        </button>
+
+        
       </div>
     </header>
   );
@@ -140,7 +159,30 @@ useEffect(() => {
       </div>
     </div>
   );
+    interface Handout {
+      subjectId: number;
+      handout: File;
+    }
+  const [handouts, setHandouts] = useState<Handout[]>([]);
 
+  const handleFileUpload = (subjectid: number, file: File | null) => {
+  if (!file) return;
+
+  const newHandout: Handout = {
+    subjectId: subjectid,
+    handout: file
+  };
+
+  setHandouts(prev => [...prev, newHandout]);
+};
+
+const getFileName = (subjectId: number) => {
+  return handouts.find(h => h.subjectId === subjectId)?.handout.name;
+};
+
+const getHandout = (subjectId: number) => {
+  return handouts.find(h => h.subjectId === subjectId);
+};
   // Screen 2: Uploads
   const renderUploadsScreen = () => (
     <div className="max-w-3xl mx-auto mt-10 p-6 bg-white border rounded shadow">
@@ -159,12 +201,29 @@ useEffect(() => {
 
       <div className="space-y-4 mt-8">
         {subjects.map((subject, index) => (
-          <div key={subject.id} className="flex justify-between items-center p-4 bg-gray-50 border rounded">
-            <span className="font-medium text-gray-700">{index + 1}. {subject.name}</span>
-            <button className="px-4 py-2 bg-gray-300 text-gray-700 text-sm font-medium rounded hover:bg-gray-400 hover:cursor-pointer">
-              Upload
-            </button>
-          </div>
+          <div
+    key={subject.id}
+    className="flex justify-between items-center p-4 bg-gray-50 border rounded"
+  >
+    <span className="font-medium text-gray-700">
+      {index + 1}. {subject.name}
+      <span className="text-xs text-green-600 ml-3">
+        {getFileName(subject.id) || ''}
+      </span>
+    </span>
+
+    <label className="px-4 py-2 bg-gray-300 text-gray-700 text-sm font-medium rounded hover:bg-gray-400 cursor-pointer">
+      Upload
+      <input
+        type="file"
+        accept="application/pdf"
+        className="hidden"
+        onChange={(e) =>
+          handleFileUpload(subject.id, e.target.files?.[0] || null)
+        }
+      />
+    </label>
+  </div>
         ))}
       </div>
     </div>
@@ -385,17 +444,101 @@ const [timetable, setTimetable] = useState<Cell[][]>(() => {
 });
 
   const toggleCell = (rowIndex: number, colIndex: number) => {
-  setTimetable(prev =>
-    prev.map((row, i) =>
-      row.map((cell, j) => {
-        if (i === rowIndex && j === colIndex) {
-          return { ...cell, completed: !cell.completed };
-        }
-        return cell;
-      })
-    )
-  );
+    setTimetable(prev =>
+      prev.map((row, i) =>
+        row.map((cell, j) => {
+          if (i === rowIndex && j === colIndex) {
+            return { ...cell, completed: !cell.completed };
+          }
+          return cell;
+        })
+      )
+    );
 };
+
+const openPDF = (file: File) => {
+  const fileURL = URL.createObjectURL(file);
+  window.open(fileURL, '_blank');
+};
+
+  const currentData = () => (
+    <div className="text-black max-w-xl mx-auto mt-6 p-5 bg-white border rounded-xl shadow">
+    <h3 className="text-lg font-semibold mb-4">
+      Your current profile
+    </h3>
+
+  <div className="space-y-3">
+    {subjects.map((val, ind) => (
+      <div
+        key={ind}
+        className="flex items-center justify-between bg-gray-50 px-4 py-3 rounded-lg hover:bg-gray-200"
+      >
+        {/* Left: Subject */}
+        <div className="flex items-center space-x-3">
+          <span className="text-sm text-gray-500">{ind + 1}.</span>
+          <span className="font-medium">{val.name}</span>
+        </div>
+
+        {/* Right: Strength */}
+        <div
+          className={`px-3 py-1 text-xs font-semibold rounded-full ${
+            val.strength !== null
+              ? strengthColors[val.strength]
+              : 'bg-gray-200 text-gray-600'
+          }`}
+        >
+          {val.strength !== null
+            ? `strength: ${val.strength + 1}`
+            : 'Not rated'}
+        </div>
+
+
+      </div>
+    ))}
+  </div>
+
+  <div className='text-black max-w-xl mx-auto mt-6 p-5 bg-white border rounded-xl shadow'>
+    <span className='font-semibold'>Handouts with us</span>
+    {subjects.map((val, ind) => {
+  const handout = getHandout(val.id);
+
+  return (
+    <div
+      key={ind}
+      className="flex items-center justify-between bg-gray-50 px-4 py-3 rounded-lg hover:bg-gray-200"
+    >
+      {/* Left: Subject */}
+      <div className="flex items-center space-x-3">
+        <span className="text-sm text-gray-500">{ind + 1}.</span>
+        <span className="font-medium">{val.name}</span>
+      </div>
+
+      {/* Right: File info */}
+      <div className="flex items-center space-x-3">
+        {handout ? (
+          <>
+            <span className="text-sm text-green-600 truncate max-w-[150px]">
+              {handout.handout.name}
+            </span>
+            <button
+              onClick={() => openPDF(handout.handout)}
+              className="text-xs px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 hover:cursor-pointer active:bg-blue-900"
+            >
+              Open
+            </button>
+          </>
+        ) : (
+          <span className="text-xs text-gray-400">
+            No file
+          </span>
+        )}
+      </div>
+    </div>
+  );
+})}
+  </div>
+</div>
+  )
 
 
   const renderTimetableView = () => (
@@ -462,6 +605,7 @@ const [timetable, setTimetable] = useState<Cell[][]>(() => {
         {currentStep === 'uploads' && renderUploadsScreen()}
         {currentStep === 'chat' && renderChatScreen()}
         {currentStep === 'timetable' && renderTimetableView()}
+        {currentStep === 'data' && currentData()}
         
         {/* Placeholder for dashboard screen from wireframe */}
         {currentStep === 'dashboard' && (
