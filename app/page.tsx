@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { mainBackUrl } from './Urls';
 
 type Step = 'subjects' | 'uploads' | 'chat' | 'timetable' | 'dashboard' | 'custom' | 'data'
 
@@ -243,6 +244,9 @@ const getHandout = (subjectId: number) => {
   const [chats, setChats] = useState<Chats[]>([]);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [input, setInput] = useState('');
+  const [sendTex, setSendTex] = useState('');
+
+  const [isSending, setIsSending] = useState(false);
 
   const createNewChat = () => {
     const newChat: Chats = {
@@ -261,8 +265,11 @@ const getHandout = (subjectId: number) => {
     }
   },[currentStep, chats]);
 
-  const handleSend = (e: React.MouseEvent<HTMLButtonElement>) => {
+  const handleSend = async(e: React.MouseEvent<HTMLButtonElement>) => {
     if (!input.trim() || !currentChatId) return;
+
+    setSendTex(input);
+    
 
     setChats(prevChats =>
       prevChats.map(chat =>
@@ -271,25 +278,32 @@ const getHandout = (subjectId: number) => {
               ...chat,
               messages: [
                 ...chat.messages,
-                { role: 'user', message: input },
-                {
-                  role: 'ai',
-                  message: "Generating schedule based on your strengths...",
-                  type: 'timetable'
-                }
+                { role: 'user', message: input }
               ]
             }
           : chat
       )
     );
 
-    setInput("");
-  };
+    setInput('');
+    setIsSending(true);
 
-  const currentChat = chats.find(c => c.chat_id === currentChatId);
+    try {
+        const res = await fetch(`${mainBackUrl}/chat`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json' 
+      },
+      body: JSON.stringify({ message: input })
+    });
 
+    const text = await res.text();
 
-  const Regenerate = () => {
+    const data = JSON.parse(text);
+
+    console.log(data);
+
+    // Add bot response
     setChats(prevChats =>
       prevChats.map(chat =>
         chat.chat_id === currentChatId
@@ -297,16 +311,23 @@ const getHandout = (subjectId: number) => {
               ...chat,
               messages: [
                 ...chat.messages,
-                {
-                  role: 'ai',
-                  message: "No worries, We are generating a new schedule for you....",
-                  type: 'timetable'
-                }
+                { role: 'ai',type: 'timetable', message: data.reply }
               ]
             }
           : chat
-      ));
-  }
+      )
+    );
+    
+    }catch (err) {
+      console.error(err);
+    }
+    setIsSending(false);
+  };
+
+  const currentChat = chats.find(c => c.chat_id === currentChatId);
+  const sendBtnRef = useRef<HTMLButtonElement>(null);
+
+
 
   // Screen 3: AI Chat Interface
   const renderChatScreen = () => (
@@ -348,55 +369,39 @@ const getHandout = (subjectId: number) => {
           : 'bg-gray-800 text-white rounded-tl-none'
       }`}
     >
+      {msg.role === 'user' && <p>{msg.message}</p>}
       {/* TEXT MESSAGE */}
-      {msg.type !== 'timetable' && <p>{msg.message}</p>}
-
-      {/* TIMETABLE MESSAGE */}
-      {msg.type === 'timetable' && (
-        <div>
-          <p className="mb-3 text-sm text-gray-200">
-            {msg.message}
-          </p>
-
-          <div className="bg-gray-700 rounded p-2 grid grid-cols-5 gap-1 text-xs text-center">
-            <div className="bg-gray-600 p-1">Mon</div>
-            <div className="bg-gray-600 p-1">Tue</div>
-            <div className="bg-gray-600 p-1">Wed</div>
-            <div className="bg-gray-600 p-1">Thu</div>
-            <div className="bg-gray-600 p-1">Fri</div>
-
-            <div className="bg-red-400/50 p-1">Math</div>
-            <div className="bg-green-400/50 p-1">Pol</div>
-            <div className="bg-yellow-400/50 p-1">Lit</div>
-            <div className="bg-red-400/50 p-1">Math</div>
-            <div className="bg-green-400/50 p-1">Pol</div>
-          </div>
-
-          <div className="flex space-x-2 mt-3">
-            <button onClick = {()=> Regenerate()} 
-            className="px-3 py-1 text-xs bg-red-600 rounded hover:cursor-pointer hover:bg-red-700 active:bg-gray-500">
-              Reject
-            </button>
-            <button
-              onClick={() => setCurrentStep('timetable')}
-              className="px-3 py-1 text-xs bg-green-500 rounded hover:cursor-pointer hover:bg-green-700 active:bg-gray-500"
-            >
-              Accept
-            </button>
-          </div>
-        </div>
-      )}
+      
+      {msg.type === 'timetable' && <p>{msg.message}</p>}
+      
     </div>
   </div>
 ))}
+{isSending && (
+  <div className="flex justify-start">
+    <div className="bg-gray-800 text-white p-4 rounded-lg rounded-tl-none shadow-sm">
+      <div className="flex space-x-1">
+        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-100"></div>
+        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-200"></div>
+      </div>
+    </div>
+  </div>
+)}
 </div>
 
         {/* Input area */}
         <div className="absolute bottom-6 left-6 right-6">
           <div className="relative">
               <input type="text" value={input} onChange={(e)=>setInput(e.target.value)} 
-              className="w-full border-2 bg-gray-200/70 backdrop-blur-md border-gray-300 text-black rounded-lg p-4 pr-12 shadow-sm focus:outline-none focus:border-green-500" placeholder="Type your message..." />
-              <button onClick = {(e) => handleSend(e)} className="absolute right-4 top-4 bg-black text-white p-1 rounded">
+              className="w-full border-2 bg-gray-200/70 backdrop-blur-md border-gray-300 text-black rounded-lg p-4 pr-12 shadow-sm focus:outline-none focus:border-green-500" placeholder="Type your message..." 
+              onKeyDown={(e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      sendBtnRef.current?.click();
+    }
+  }}/>
+              <button ref = {sendBtnRef} onClick = {(e) => handleSend(e)} className="absolute right-4 top-4 bg-black text-white p-1 rounded">
                 <span className="block w-4 h-4 text-center leading-4">→</span>
               </button>
           </div>
