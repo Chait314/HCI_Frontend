@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from 'react';
-import { mainBackUrl } from './Urls';
 
 type Step = 'subjects' | 'uploads' | 'chat' | 'timetable' | 'dashboard' | 'custom' | 'data'
 
@@ -420,17 +419,21 @@ const getHandout = (subjectId: number) => {
     setIsSending(true);
 
     try {
-        const res = await fetch(`${mainBackUrl}/chat`, {
+        const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json' 
       },
-      body: JSON.stringify({ message: input })
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: input }]
+      })
     });
 
-    const text = await res.text();
+    const data = await res.json();
 
-    const data = JSON.parse(text);
+    if (!res.ok) {
+      throw new Error(data?.error || 'Chat request failed');
+    }
 
     console.log(data);
 
