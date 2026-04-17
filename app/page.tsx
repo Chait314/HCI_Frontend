@@ -194,23 +194,85 @@ useEffect(() => {
   );
     interface Handout {
       subjectId: number;
-      handout: File;
+      fileName: string;
+      mimeType: string;
+      dataUrl: string;
     }
   const [handouts, setHandouts] = useState<Handout[]>([]);
+  const [handoutStatus, setHandoutStatus] = useState<Record<number, string>>({});
 
-  const handleFileUpload = (subjectid: number, file: File | null) => {
+  const fileToDataUrl = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsDataURL(file);
+    });
+
+  useEffect(() => {
+    const savedHandouts = localStorage.getItem('handouts');
+    if (!savedHandouts) return;
+
+    try {
+      const parsed = JSON.parse(savedHandouts);
+      if (!Array.isArray(parsed)) return;
+
+      const normalizedHandouts: Handout[] = parsed
+        .map((item) => ({
+          subjectId: typeof item?.subjectId === 'number' ? item.subjectId : -1,
+          fileName: typeof item?.fileName === 'string' ? item.fileName : '',
+          mimeType: typeof item?.mimeType === 'string' ? item.mimeType : 'application/pdf',
+          dataUrl: typeof item?.dataUrl === 'string' ? item.dataUrl : '',
+        }))
+        .filter((item) => item.subjectId >= 0 && item.fileName && item.dataUrl);
+
+      setHandouts(normalizedHandouts);
+    } catch (error) {
+      console.error('Failed to parse handouts from localStorage:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('handouts', JSON.stringify(handouts));
+  }, [handouts]);
+
+  const handleFileUpload = async (subjectid: number, file: File | null) => {
   if (!file) return;
 
-  const newHandout: Handout = {
-    subjectId: subjectid,
-    handout: file
-  };
+  const existingHandout = handouts.find((h) => h.subjectId === subjectid);
+  if (existingHandout) {
+    setHandoutStatus((prev) => ({
+      ...prev,
+      [subjectid]: 'A handout already exists for this subject. Delete it first to upload a new one.',
+    }));
+    return;
+  }
 
-  setHandouts(prev => [...prev, newHandout]);
+  try {
+    const dataUrl = await fileToDataUrl(file);
+
+    const newHandout: Handout = {
+      subjectId: subjectid,
+      fileName: file.name,
+      mimeType: file.type || 'application/pdf',
+      dataUrl,
+    };
+
+    setHandouts((prev) => [...prev, newHandout]);
+    setHandoutStatus((prev) => ({ ...prev, [subjectid]: 'Handout saved successfully.' }));
+  } catch (error) {
+    console.error(error);
+    setHandoutStatus((prev) => ({ ...prev, [subjectid]: 'Could not save this file.' }));
+  }
+};
+
+const deleteHandout = (subjectId: number) => {
+  setHandouts((prev) => prev.filter((h) => h.subjectId !== subjectId));
+  setHandoutStatus((prev) => ({ ...prev, [subjectId]: 'Handout deleted.' }));
 };
 
 const getFileName = (subjectId: number) => {
-  return handouts.find(h => h.subjectId === subjectId)?.handout.name;
+  return handouts.find(h => h.subjectId === subjectId)?.fileName;
 };
 
 const getHandout = (subjectId: number) => {
@@ -234,29 +296,41 @@ const getHandout = (subjectId: number) => {
 
       <div className="space-y-4 mt-8">
         {subjects.map((subject, index) => (
-          <div
-    key={subject.id}
-    className="flex justify-between items-center p-4 bg-gray-50 border rounded"
-  >
-    <span className="font-medium text-gray-700">
-      {index + 1}. {subject.name}
-      <span className="text-xs text-green-600 ml-3">
-        {getFileName(subject.id) || ''}
-      </span>
-    </span>
+          <div key={subject.id}>
+            <div className="flex justify-between items-center p-4 bg-gray-50 border rounded">
+              <span className="font-medium text-gray-700">
+                {index + 1}. {subject.name}
+                <span className="text-xs text-green-600 ml-3">
+                  {getFileName(subject.id) || ''}
+                </span>
+              </span>
 
-    <label className="px-4 py-2 bg-gray-300 text-gray-700 text-sm font-medium rounded hover:bg-gray-400 cursor-pointer">
-      Upload
-      <input
-        type="file"
-        accept="application/pdf"
-        className="hidden"
-        onChange={(e) =>
-          handleFileUpload(subject.id, e.target.files?.[0] || null)
-        }
-      />
-    </label>
-  </div>
+              <div className="flex items-center">
+                <label className="px-4 py-2 bg-gray-300 text-gray-700 text-sm font-medium rounded hover:bg-gray-400 cursor-pointer">
+                  Upload
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    onChange={(e) =>
+                      void handleFileUpload(subject.id, e.target.files?.[0] || null)
+                    }
+                  />
+                </label>
+                {getHandout(subject.id) && (
+                  <button
+                    onClick={() => deleteHandout(subject.id)}
+                    className="ml-2 px-4 py-2 bg-red-500 text-white text-sm font-medium rounded hover:bg-red-600 cursor-pointer"
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+            </div>
+            {handoutStatus[subject.id] && (
+              <p className="text-xs text-gray-600 mt-2">{handoutStatus[subject.id]}</p>
+            )}
+          </div>
         ))}
       </div>
     </div>
@@ -493,9 +567,8 @@ const [timetable, setTimetable] = useState<Cell[][]>(() => {
     );
 };
 
-const openPDF = (file: File) => {
-  const fileURL = URL.createObjectURL(file);
-  window.open(fileURL, '_blank');
+const openPDF = (handout: Handout) => {
+  window.open(handout.dataUrl, '_blank');
 };
 
   const currentData = () => (
@@ -555,13 +628,19 @@ const openPDF = (file: File) => {
         {handout ? (
           <>
             <span className="text-sm text-green-600 truncate max-w-[150px]">
-              {handout.handout.name}
+              {handout.fileName}
             </span>
             <button
-              onClick={() => openPDF(handout.handout)}
+              onClick={() => openPDF(handout)}
               className="text-xs px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 hover:cursor-pointer active:bg-blue-900"
             >
               Open
+            </button>
+            <button
+              onClick={() => deleteHandout(val.id)}
+              className="text-xs px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 hover:cursor-pointer"
+            >
+              Delete
             </button>
           </>
         ) : (
