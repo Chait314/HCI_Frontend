@@ -200,6 +200,19 @@ useEffect(() => {
     }
   const [handouts, setHandouts] = useState<Handout[]>([]);
   const [handoutStatus, setHandoutStatus] = useState<Record<number, string>>({});
+  const SUPPORTED_HANDOUT_MIME_TYPES = [
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ];
+
+  const isSupportedHandoutFile = (file: File) => {
+    const lowerFileName = file.name.toLowerCase();
+    return (
+      SUPPORTED_HANDOUT_MIME_TYPES.includes(file.type) ||
+      lowerFileName.endsWith('.pdf') ||
+      lowerFileName.endsWith('.docx')
+    );
+  };
 
   const fileToDataUrl = (file: File) =>
     new Promise<string>((resolve, reject) => {
@@ -239,6 +252,14 @@ useEffect(() => {
   const handleFileUpload = async (subjectid: number, file: File | null) => {
   if (!file) return;
 
+  if (!isSupportedHandoutFile(file)) {
+    setHandoutStatus((prev) => ({
+      ...prev,
+      [subjectid]: 'Only PDF and DOCX files are supported.',
+    }));
+    return;
+  }
+
   const existingHandout = handouts.find((h) => h.subjectId === subjectid);
   if (existingHandout) {
     setHandoutStatus((prev) => ({
@@ -254,7 +275,11 @@ useEffect(() => {
     const newHandout: Handout = {
       subjectId: subjectid,
       fileName: file.name,
-      mimeType: file.type || 'application/pdf',
+      mimeType:
+        file.type ||
+        (file.name.toLowerCase().endsWith('.docx')
+          ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          : 'application/pdf'),
       dataUrl,
     };
 
@@ -310,7 +335,7 @@ const getHandout = (subjectId: number) => {
                   Upload
                   <input
                     type="file"
-                    accept="application/pdf"
+                    accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx"
                     className="hidden"
                     onChange={(e) =>
                       void handleFileUpload(subject.id, e.target.files?.[0] || null)
@@ -567,8 +592,20 @@ const [timetable, setTimetable] = useState<Cell[][]>(() => {
     );
 };
 
-const openPDF = (handout: Handout) => {
-  window.open(handout.dataUrl, '_blank');
+const isPdfHandout = (handout: Handout) => {
+  return handout.mimeType === 'application/pdf' || handout.fileName.toLowerCase().endsWith('.pdf');
+};
+
+const openHandout = (handout: Handout) => {
+  if (isPdfHandout(handout)) {
+    window.open(handout.dataUrl, '_blank');
+    return;
+  }
+
+  const link = document.createElement('a');
+  link.href = handout.dataUrl;
+  link.download = handout.fileName;
+  link.click();
 };
 
   const currentData = () => (
@@ -631,10 +668,10 @@ const openPDF = (handout: Handout) => {
               {handout.fileName}
             </span>
             <button
-              onClick={() => openPDF(handout)}
+              onClick={() => openHandout(handout)}
               className="text-xs px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 hover:cursor-pointer active:bg-blue-900"
             >
-              Open
+              {isPdfHandout(handout) ? 'Open' : 'Download'}
             </button>
             <button
               onClick={() => deleteHandout(val.id)}
