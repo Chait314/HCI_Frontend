@@ -30,6 +30,38 @@ useEffect(() => {
     { id: 3, name: 'Literature', strength: null },
   ]);
 
+  useEffect(() => {
+    const savedSubjects = localStorage.getItem('subjects');
+    if (!savedSubjects) return;
+
+    try {
+      const parsed = JSON.parse(savedSubjects);
+
+      if (!Array.isArray(parsed)) return;
+
+      const normalizedSubjects: Subject[] = parsed
+        .map((item) => ({
+          id: typeof item?.id === 'number' ? item.id : Date.now(),
+          name: typeof item?.name === 'string' ? item.name : '',
+          strength:
+            typeof item?.strength === 'number' && item.strength >= 0 && item.strength <= 4
+              ? item.strength
+              : null,
+        }))
+        .filter((item) => item.name.trim() !== '');
+
+      if (normalizedSubjects.length > 0) {
+        setSubjects(normalizedSubjects);
+      }
+    } catch (error) {
+      console.error('Failed to parse subjects from localStorage:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('subjects', JSON.stringify(subjects));
+  }, [subjects]);
+
   const [newSubjectName, setNewSubjectName] = useState('');
   const [isAdding, setIsAdding] = useState(false);
 
