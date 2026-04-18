@@ -651,7 +651,7 @@ const [timetable, setTimetable] = useState<Cell[][]>(() => {
   return createFallbackTimetable();
 });
 
-const generateTimetableWithAI = async () => {
+const generateTimetableWithAI = async (userSuggestion?: string) => {
   if (subjects.length === 0) {
     setTimetableError('Please add at least one subject before generating a timetable.');
     return;
@@ -673,6 +673,9 @@ const generateTimetableWithAI = async () => {
           score: subject.strength === null ? null : subject.strength + 1,
         })),
         handouts,
+        ...(userSuggestion && userSuggestion.trim()
+          ? { prompt: userSuggestion.trim() }
+          : {}),
       }),
     });
 
@@ -705,6 +708,16 @@ const generateTimetableWithAI = async () => {
   } finally {
     setIsGeneratingTimetable(false);
   }
+};
+
+const handleRegenerateWithSuggestion = async () => {
+  const suggestion = window.prompt(
+    'What would you like to change in this timetable? (example: more focus on weak subjects, lighter Friday, exam-priority topics)',
+    '',
+  );
+
+  if (suggestion === null) return;
+  await generateTimetableWithAI(suggestion);
 };
 
   const toggleCell = (rowIndex: number, colIndex: number) => {
@@ -827,7 +840,7 @@ const openHandout = (handout: Handout) => {
       <div className="flex justify-between items-center mb-2">
         <h2 className="text-xl font-medium text-gray-800">We're glad you liked it!</h2>
         <button
-          onClick={() => void generateTimetableWithAI()}
+          onClick={() => void handleRegenerateWithSuggestion()}
           disabled={isGeneratingTimetable}
           className="px-4 py-2 bg-green-700 text-white text-sm rounded hover:bg-green-800 disabled:bg-green-400 disabled:cursor-not-allowed"
         >
