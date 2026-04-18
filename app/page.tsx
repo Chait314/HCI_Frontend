@@ -10,6 +10,60 @@ interface Subject {
   strength: number | null;
 }
 
+type StudyPreferences = {
+  workingDays: string[];
+  workingHoursByDay: Record<string, { start: string; end: string }>;
+  slotDurationMinutes: number;
+};
+
+const WEEK_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DEFAULT_DAY_RANGE = { start: '08:00', end: '12:00' };
+
+const parseTimeToMinutes = (value: string) => {
+  const match = value.match(/^(\d{2}):(\d{2})$/);
+  if (!match) return null;
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+
+  return hours * 60 + minutes;
+};
+
+const formatMinutesTo12Hour = (totalMinutes: number) => {
+  const bounded = Math.max(0, Math.min(totalMinutes, 24 * 60 - 1));
+  const hours24 = Math.floor(bounded / 60);
+  const minutes = bounded % 60;
+  const suffix = hours24 >= 12 ? 'pm' : 'am';
+  const hours12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
+  return `${hours12}:${minutes.toString().padStart(2, '0')} ${suffix}`;
+};
+
+const getSlotStartsForDay = (
+  day: string,
+  preferences: StudyPreferences,
+) => {
+  const range = preferences.workingHoursByDay[day] || DEFAULT_DAY_RANGE;
+  const start = parseTimeToMinutes(range.start);
+  const end = parseTimeToMinutes(range.end);
+  const slotDuration = Math.max(15, preferences.slotDurationMinutes || 60);
+
+  if (start === null || end === null || end <= start) return [];
+
+  const slotCount = Math.floor((end - start) / slotDuration);
+  if (slotCount <= 0) return [];
+
+  return Array.from({ length: slotCount }, (_, index) => start + index * slotDuration);
+};
+
+const formatTimeRangeFromStart = (start: number, slotDurationMinutes: number) => {
+  const safeDuration = Math.max(15, slotDurationMinutes || 60);
+  const slotEnd = start + safeDuration;
+  return `${formatMinutesTo12Hour(start)} - ${formatMinutesTo12Hour(slotEnd)}`;
+};
+
 export default function StudyPlannerApp() {
   const [currentStep, setCurrentStep] = useState<Step>('subjects');
 
@@ -28,6 +82,17 @@ useEffect(() => {
     { id: 2, name: 'Politics', strength: null },
     { id: 3, name: 'Literature', strength: null },
   ]);
+  const [studyPreferences, setStudyPreferences] = useState<StudyPreferences>({
+    workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+    workingHoursByDay: {
+      Mon: { ...DEFAULT_DAY_RANGE },
+      Tue: { ...DEFAULT_DAY_RANGE },
+      Wed: { ...DEFAULT_DAY_RANGE },
+      Thu: { ...DEFAULT_DAY_RANGE },
+      Fri: { ...DEFAULT_DAY_RANGE },
+    },
+    slotDurationMinutes: 60,
+  });
 
   useEffect(() => {
     const savedSubjects = localStorage.getItem('subjects');
@@ -60,6 +125,105 @@ useEffect(() => {
   useEffect(() => {
     localStorage.setItem('subjects', JSON.stringify(subjects));
   }, [subjects]);
+
+  useEffect(() => {
+    const savedStudyPreferences = localStorage.getItem('studyPreferences');
+    if (!savedStudyPreferences) return;
+
+    try {
+      const parsed = JSON.parse(savedStudyPreferences);
+
+      const normalizedDays = Array.isArray(parsed?.workingDays)
+        ? parsed.workingDays.filter(
+            (day: unknown): day is string =>
+              typeof day === 'string' && WEEK_DAYS.includes(day),
+          )
+        : [];
+
+      const parsedHoursByDay =
+        parsed?.workingHoursByDay && typeof parsed.workingHoursByDay === 'object'
+          ? parsed.workingHoursByDay
+          : {};
+
+      const normalizedHoursByDay = WEEK_DAYS.reduce<Record<string, { start: string; end: string }>>(
+        (acc, day) => {
+          const entry = (parsedHoursByDay as Record<string, unknown>)[day] as
+            | { start?: unknown; end?: unknown }
+            | undefined;
+
+          const start = typeof entry?.start === 'string' ? entry.start : DEFAULT_DAY_RANGE.start;
+          const end = typeof entry?.end === 'string' ? entry.end : DEFAULT_DAY_RANGE.end;
+
+          acc[day] = {
+            start,
+            end,
+          };
+
+          return acc;
+        },
+        {},
+      );
+
+      const normalizedSlotDuration =
+        typeof parsed?.slotDurationMinutes === 'number' && parsed.slotDurationMinutes >= 15
+          ? Math.floor(parsed.slotDurationMinutes)
+          : 60;
+
+      setStudyPreferences({
+        workingDays: normalizedDays.length > 0 ? normalizedDays : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+        workingHoursByDay: normalizedHoursByDay,
+        slotDurationMinutes: normalizedSlotDuration,
+      });
+    } catch (error) {
+      console.error('Failed to parse studyPreferences from localStorage:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('studyPreferences', JSON.stringify(studyPreferences));
+  }, [studyPreferences]);
+
+  const toggleWorkingDay = (day: string) => {
+    setStudyPreferences((prev) => {
+      const isSelected = prev.workingDays.includes(day);
+
+      if (isSelected) {
+        // Keep at least one working day selected.
+        if (prev.workingDays.length === 1) return prev;
+
+        return {
+          ...prev,
+          workingDays: prev.workingDays.filter((item) => item !== day),
+        };
+      }
+
+      return {
+        ...prev,
+        workingDays: [...prev.workingDays, day],
+        workingHoursByDay: {
+          ...prev.workingHoursByDay,
+          [day]: prev.workingHoursByDay[day] || { ...DEFAULT_DAY_RANGE },
+        },
+      };
+    });
+  };
+
+  const updateWorkingHoursByDay = (
+    day: string,
+    field: 'start' | 'end',
+    value: string,
+  ) => {
+    setStudyPreferences((prev) => ({
+      ...prev,
+      workingHoursByDay: {
+        ...prev.workingHoursByDay,
+        [day]: {
+          ...(prev.workingHoursByDay[day] || { ...DEFAULT_DAY_RANGE }),
+          [field]: value,
+        },
+      },
+    }));
+  };
 
   const [newSubjectName, setNewSubjectName] = useState('');
   const [isAdding, setIsAdding] = useState(false);
@@ -138,6 +302,80 @@ useEffect(() => {
       </div>
 
       <div className="mt-8">
+        <div className="mb-8 p-4 bg-gray-50 rounded border">
+          <h3 className="text-lg text-gray-700 mb-3">Study Availability</h3>
+
+          <p className="text-sm text-gray-600 mb-2">Choose working days (Sun to Sat):</p>
+          <div className="flex flex-wrap gap-2 mb-4">
+            {WEEK_DAYS.map((day) => {
+              const selected = studyPreferences.workingDays.includes(day);
+
+              return (
+                <button
+                  key={day}
+                  type="button"
+                  onClick={() => toggleWorkingDay(day)}
+                  className={`px-3 py-1 rounded text-sm border ${
+                    selected
+                      ? 'bg-green-600 text-white border-green-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'
+                  }`}
+                >
+                  {day}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="space-y-3 mb-4">
+            <p className="text-sm text-gray-600">Set working time for each selected day:</p>
+            <div className="space-y-2">
+              {WEEK_DAYS.filter((day) => studyPreferences.workingDays.includes(day)).map((day) => (
+                <div key={day} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                  <span className="text-sm font-medium text-gray-700">{day}</span>
+                  <label className="flex flex-col text-sm text-gray-700">
+                    Start
+                    <input
+                      type="time"
+                      value={studyPreferences.workingHoursByDay[day]?.start || DEFAULT_DAY_RANGE.start}
+                      onChange={(e) => updateWorkingHoursByDay(day, 'start', e.target.value)}
+                      className="mt-1 border p-2 rounded text-black"
+                    />
+                  </label>
+                  <label className="flex flex-col text-sm text-gray-700">
+                    End
+                    <input
+                      type="time"
+                      value={studyPreferences.workingHoursByDay[day]?.end || DEFAULT_DAY_RANGE.end}
+                      onChange={(e) => updateWorkingHoursByDay(day, 'end', e.target.value)}
+                      className="mt-1 border p-2 rounded text-black"
+                    />
+                  </label>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <label className="flex flex-col text-sm text-gray-700">
+              Slot Duration (minutes)
+              <input
+                type="number"
+                min={15}
+                step={15}
+                value={studyPreferences.slotDurationMinutes}
+                onChange={(e) =>
+                  setStudyPreferences((prev) => ({
+                    ...prev,
+                    slotDurationMinutes: Number(e.target.value) || 15,
+                  }))
+                }
+                className="mt-1 border p-2 rounded text-black"
+              />
+            </label>
+          </div>
+        </div>
+
         <h3 className="text-lg text-gray-600 border-b pb-2 mb-4">Current Courses:</h3>
         {isAdding && (
         <div className="mt-4 flex space-x-2">
@@ -366,12 +604,20 @@ const getHandout = (subjectId: number) => {
     topic: string;
   };
 
+  type TimetableViewConfig = {
+    days: string[];
+    rowSlotStarts: number[];
+    slotDurationMinutes: number;
+    daySlotStarts: Record<string, number[]>;
+  };
+
   type SavedTimetable = {
     id: string;
     source: 'chat' | 'timetable-screen';
     createdAt: string;
     signature: string;
     timetable: ChatTimetableCell[][];
+    viewConfig: TimetableViewConfig;
   };
 
   type ConversationTurn = {
@@ -395,17 +641,124 @@ const getHandout = (subjectId: number) => {
   const [chats, setChats] = useState<Chats[]>([]);
   const [savedTimetables, setSavedTimetables] = useState<SavedTimetable[]>([]);
   const [isViewingSavedTimetable, setIsViewingSavedTimetable] = useState(false);
+  const [openedSavedViewConfig, setOpenedSavedViewConfig] = useState<TimetableViewConfig | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [sendTex, setSendTex] = useState('');
 
   const [isSending, setIsSending] = useState(false);
+  const orderedWorkingDays = WEEK_DAYS.filter((day) => studyPreferences.workingDays.includes(day));
+  const daySlotStarts = orderedWorkingDays.reduce<Record<string, number[]>>((acc, day) => {
+    acc[day] = getSlotStartsForDay(day, studyPreferences);
+    return acc;
+  }, {});
+  const allSlotStarts = Array.from(
+    new Set(orderedWorkingDays.flatMap((day) => daySlotStarts[day] || [])),
+  ).sort((a, b) => a - b);
+  const fallbackStart = parseTimeToMinutes(DEFAULT_DAY_RANGE.start) ?? 8 * 60;
+  const rowSlotStarts = allSlotStarts.length > 0 ? allSlotStarts : [fallbackStart];
+  const timeRowLabels = rowSlotStarts.map((start) =>
+    formatTimeRangeFromStart(start, studyPreferences.slotDurationMinutes),
+  );
+  const maxTimeSlots = rowSlotStarts.length;
+
+  const currentViewConfig: TimetableViewConfig = {
+    days: [...orderedWorkingDays],
+    rowSlotStarts: [...rowSlotStarts],
+    slotDurationMinutes: studyPreferences.slotDurationMinutes,
+    daySlotStarts: Object.fromEntries(
+      orderedWorkingDays.map((day) => [day, [...(daySlotStarts[day] || [])]]),
+    ),
+  };
+
+  const defaultViewConfigFromShape = (
+    timetableRows: ChatTimetableCell[][],
+  ): TimetableViewConfig => {
+    const fallbackStart = parseTimeToMinutes(DEFAULT_DAY_RANGE.start) ?? 8 * 60;
+    const rows = Math.max(1, timetableRows.length || 1);
+    const cols = Math.max(1, timetableRows[0]?.length || 1);
+    const days = WEEK_DAYS.slice(0, cols);
+    const slotDurationMinutes = 60;
+    const rowStarts = Array.from({ length: rows }, (_, index) => fallbackStart + index * slotDurationMinutes);
+
+    return {
+      days,
+      rowSlotStarts: rowStarts,
+      slotDurationMinutes,
+      daySlotStarts: Object.fromEntries(days.map((day) => [day, [...rowStarts]])),
+    };
+  };
+
+  const normalizeViewConfig = (
+    maybeConfig: unknown,
+    timetableRows: ChatTimetableCell[][],
+  ): TimetableViewConfig => {
+    const fallback = defaultViewConfigFromShape(timetableRows);
+    if (!maybeConfig || typeof maybeConfig !== 'object') return fallback;
+
+    const record = maybeConfig as {
+      days?: unknown;
+      rowSlotStarts?: unknown;
+      slotDurationMinutes?: unknown;
+      daySlotStarts?: unknown;
+    };
+
+    const days = Array.isArray(record.days)
+      ? record.days.filter((day): day is string => typeof day === 'string' && WEEK_DAYS.includes(day))
+      : [];
+
+    const rowSlotStarts = Array.isArray(record.rowSlotStarts)
+      ? record.rowSlotStarts.filter((value): value is number => typeof value === 'number')
+      : [];
+
+    const slotDurationMinutes =
+      typeof record.slotDurationMinutes === 'number' && record.slotDurationMinutes >= 15
+        ? record.slotDurationMinutes
+        : fallback.slotDurationMinutes;
+
+    const parsedDaySlotStarts =
+      record.daySlotStarts && typeof record.daySlotStarts === 'object'
+        ? (record.daySlotStarts as Record<string, unknown>)
+        : {};
+
+    const safeDays = days.length > 0 ? days : fallback.days;
+    const safeRowStarts = rowSlotStarts.length > 0 ? rowSlotStarts : fallback.rowSlotStarts;
+
+    const daySlotStartsNormalized: Record<string, number[]> = Object.fromEntries(
+      safeDays.map((day) => {
+        const dayValues = parsedDaySlotStarts[day];
+        const normalized = Array.isArray(dayValues)
+          ? dayValues.filter((value): value is number => typeof value === 'number')
+          : [];
+
+        return [day, normalized.length > 0 ? normalized : [...safeRowStarts]];
+      }),
+    );
+
+    return {
+      days: safeDays,
+      rowSlotStarts: safeRowStarts,
+      slotDurationMinutes,
+      daySlotStarts: daySlotStartsNormalized,
+    };
+  };
 
   const toChatTimetableCells = (rows: Cell[][]): ChatTimetableCell[][] =>
     rows.map((row) => row.map((cell) => ({ subject: cell.subject, topic: cell.topic })));
 
-  const getTimetableSignature = (rows: ChatTimetableCell[][]) =>
-    JSON.stringify(rows.map((row) => row.map((cell) => ({ subject: cell.subject, topic: cell.topic }))));
+  const getTimetableSignature = (
+    rows: ChatTimetableCell[][],
+    viewConfig: TimetableViewConfig,
+  ) =>
+    JSON.stringify({
+      timetable: rows.map((row) => row.map((cell) => ({ subject: cell.subject, topic: cell.topic }))),
+      viewConfig: {
+        days: viewConfig.days,
+        rowSlotStarts: viewConfig.rowSlotStarts,
+        slotDurationMinutes: viewConfig.slotDurationMinutes,
+        daySlotStarts: viewConfig.daySlotStarts,
+      },
+    });
 
   useEffect(() => {
     const saved = localStorage.getItem('acceptedTimetables');
@@ -416,13 +769,22 @@ const getHandout = (subjectId: number) => {
       if (!Array.isArray(parsed)) return;
 
       const normalized: SavedTimetable[] = parsed
-        .map((item) => ({
-          id: typeof item?.id === 'string' ? item.id : `${Date.now()}-${Math.random()}`,
-          source: (item?.source === 'chat' ? 'chat' : 'timetable-screen') as SavedTimetable['source'],
-          createdAt: typeof item?.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
-          signature: typeof item?.signature === 'string' ? item.signature : '',
-          timetable: Array.isArray(item?.timetable) ? item.timetable : [],
-        }))
+        .map((item) => {
+          const rows = Array.isArray(item?.timetable) ? item.timetable : [];
+          const viewConfig = normalizeViewConfig(item?.viewConfig, rows);
+
+          return {
+            id: typeof item?.id === 'string' ? item.id : `${Date.now()}-${Math.random()}`,
+            source: (item?.source === 'chat' ? 'chat' : 'timetable-screen') as SavedTimetable['source'],
+            createdAt: typeof item?.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
+            signature:
+              typeof item?.signature === 'string' && item.signature
+                ? item.signature
+                : getTimetableSignature(rows, viewConfig),
+            timetable: rows,
+            viewConfig,
+          };
+        })
         .filter((item) => item.signature && Array.isArray(item.timetable));
 
       setSavedTimetables(normalized);
@@ -438,8 +800,9 @@ const getHandout = (subjectId: number) => {
   const saveAcceptedTimetable = (
     timetableRows: ChatTimetableCell[][],
     source: SavedTimetable['source'],
+    viewConfig: TimetableViewConfig,
   ) => {
-    const signature = getTimetableSignature(timetableRows);
+    const signature = getTimetableSignature(timetableRows, viewConfig);
     const alreadyExists = savedTimetables.some((item) => item.signature === signature);
     if (alreadyExists) return false;
 
@@ -449,6 +812,7 @@ const getHandout = (subjectId: number) => {
       createdAt: new Date().toISOString(),
       signature,
       timetable: timetableRows,
+      viewConfig,
     };
 
     setSavedTimetables((prev) => [record, ...prev]);
@@ -460,7 +824,7 @@ const getHandout = (subjectId: number) => {
     messageId: string,
     timetableRows: ChatTimetableCell[][],
   ) => {
-    saveAcceptedTimetable(timetableRows, 'chat');
+    saveAcceptedTimetable(timetableRows, 'chat', currentViewConfig);
 
     setChats((prevChats) =>
       prevChats.map((chat) =>
@@ -479,12 +843,18 @@ const getHandout = (subjectId: number) => {
   };
 
   const isCurrentTimetableAccepted = () => {
-    const signature = getTimetableSignature(toChatTimetableCells(timetable));
+    const activeViewConfig = isViewingSavedTimetable && openedSavedViewConfig
+      ? openedSavedViewConfig
+      : currentViewConfig;
+    const signature = getTimetableSignature(toChatTimetableCells(timetable), activeViewConfig);
     return savedTimetables.some((item) => item.signature === signature);
   };
 
   const handleAcceptTimetableScreen = () => {
-    saveAcceptedTimetable(toChatTimetableCells(timetable), 'timetable-screen');
+    const activeViewConfig = isViewingSavedTimetable && openedSavedViewConfig
+      ? openedSavedViewConfig
+      : currentViewConfig;
+    saveAcceptedTimetable(toChatTimetableCells(timetable), 'timetable-screen', activeViewConfig);
   };
 
   const openSavedTimetable = (saved: SavedTimetable) => {
@@ -498,6 +868,7 @@ const getHandout = (subjectId: number) => {
 
     setTimetable(reopened);
     setIsViewingSavedTimetable(true);
+    setOpenedSavedViewConfig(saved.viewConfig);
     setCurrentStep('timetable');
   };
 
@@ -592,6 +963,7 @@ const getHandout = (subjectId: number) => {
           name: subject.name,
           score: subject.strength === null ? null : subject.strength + 1,
         })),
+        studyPreferences,
         handouts,
         conversation: conversationForApi,
         previousTimetable: latestTimetableFromChat ||
@@ -609,7 +981,10 @@ const getHandout = (subjectId: number) => {
 
     const generatedRows = Array.isArray(data?.timetable) ? data.timetable : [];
 
-    if (generatedRows.length !== 4 || generatedRows.some((row: unknown) => !Array.isArray(row) || row.length !== 5)) {
+    if (
+      generatedRows.length !== maxTimeSlots ||
+      generatedRows.some((row: unknown) => !Array.isArray(row) || row.length !== orderedWorkingDays.length)
+    ) {
       throw new Error('Timetable format was invalid. Please try again.');
     }
 
@@ -714,25 +1089,50 @@ const getHandout = (subjectId: number) => {
               <thead>
                 <tr className="bg-gray-600 border-b border-gray-500">
                   <th className="p-3 border-r border-gray-500 font-medium">Time</th>
-                  <th className="p-3 border-r border-gray-500 font-medium">Mon</th>
-                  <th className="p-3 border-r border-gray-500 font-medium">Tue</th>
-                  <th className="p-3 border-r border-gray-500 font-medium">Wed</th>
-                  <th className="p-3 border-r border-gray-500 font-medium">Thu</th>
-                  <th className="p-3 font-medium">Fri</th>
+                  {orderedWorkingDays.map((day, dayIndex) => (
+                    <th
+                      key={`${msg.id}-${day}`}
+                      className={`p-3 font-medium ${
+                        dayIndex < orderedWorkingDays.length - 1
+                          ? 'border-r border-gray-500'
+                          : ''
+                      }`}
+                    >
+                      {day}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
                 {msg.timetable.map((row, rowIndex) => (
                   <tr key={rowIndex} className="border-b border-gray-600 last:border-0 text-white">
-                    <td className="p-3 border-r border-gray-600 text-sm text-gray-300">Block {rowIndex + 1}</td>
-                    {row.map((cell, colIndex) => (
+                    <td className="p-3 border-r border-gray-600 text-xs text-gray-300 align-top">
+                      {timeRowLabels[rowIndex] || 'No slot'}
+                    </td>
+                    {orderedWorkingDays.map((day, colIndex) => {
+                      const cell = row[colIndex];
+                      const rowStart = rowSlotStarts[rowIndex];
+                      const hasTimeRange = daySlotStarts[day]?.includes(rowStart);
+
+                      if (!cell || !hasTimeRange) {
+                        return (
+                          <td key={`${msg.id}-${day}-${rowIndex}`} className="p-3 border-r border-gray-600 last:border-r-0 align-top">
+                            <div className="w-full rounded text-xs p-2 min-h-20 bg-gray-800 text-gray-400">
+                              No slot
+                            </div>
+                          </td>
+                        );
+                      }
+
+                      return (
                       <td key={colIndex} className="p-3 border-r border-gray-600 last:border-r-0 align-top">
                         <div className="w-full rounded text-xs p-2 bg-gray-700 min-h-20">
                           <p className="font-medium leading-tight whitespace-normal break-words">{cell.subject}</p>
                           <p className="text-[10px] text-gray-200 leading-tight mt-1 whitespace-normal break-words">{cell.topic}</p>
                         </div>
                       </td>
-                    ))}
+                      );
+                    })}
                   </tr>
                 ))}
               </tbody>
@@ -808,9 +1208,12 @@ const getHandout = (subjectId: number) => {
   const [timetableError, setTimetableError] = useState('');
 
   const createFallbackTimetable = () => {
+    const columns = Math.max(1, orderedWorkingDays.length);
+    const rows = Math.max(1, maxTimeSlots);
+
     if (subjects.length === 0) {
-      return Array.from({ length: 4 }, () =>
-        Array.from({ length: 5 }, () => ({
+      return Array.from({ length: rows }, () =>
+        Array.from({ length: columns }, () => ({
           subject: 'General Study',
           topic: 'Revision',
           completed: false,
@@ -818,8 +1221,8 @@ const getHandout = (subjectId: number) => {
       );
     }
 
-    return Array.from({ length: 4 }, () =>
-      Array.from({ length: 5 }, (_, colIndex) => {
+    return Array.from({ length: rows }, () =>
+      Array.from({ length: columns }, (_, colIndex) => {
         const sub = subjects[colIndex % subjects.length];
         return {
           subject: sub.name,
@@ -855,6 +1258,7 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
           name: subject.name,
           score: subject.strength === null ? null : subject.strength + 1,
         })),
+        studyPreferences,
         handouts,
         previousTimetable: timetable.map((row) =>
           row.map((cell) => ({ subject: cell.subject, topic: cell.topic }))
@@ -873,7 +1277,10 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
 
     const generatedRows = Array.isArray(data?.timetable) ? data.timetable : [];
 
-    if (generatedRows.length !== 4 || generatedRows.some((row: unknown) => !Array.isArray(row) || row.length !== 5)) {
+    if (
+      generatedRows.length !== maxTimeSlots ||
+      generatedRows.some((row: unknown) => !Array.isArray(row) || row.length !== orderedWorkingDays.length)
+    ) {
       throw new Error('Timetable format was invalid. Please try again.');
     }
 
@@ -888,6 +1295,7 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
     );
 
     setIsViewingSavedTimetable(false);
+    setOpenedSavedViewConfig(null);
     setCurrentStep('timetable');
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to generate timetable.';
@@ -1021,6 +1429,15 @@ const openHandout = (handout: Handout) => {
 </div>
   )
 
+  const activeTimetableViewConfig = isViewingSavedTimetable && openedSavedViewConfig
+    ? openedSavedViewConfig
+    : currentViewConfig;
+  const activeTimetableDays = activeTimetableViewConfig.days;
+  const activeTimetableRowStarts = activeTimetableViewConfig.rowSlotStarts;
+  const activeTimetableTimeLabels = activeTimetableRowStarts.map((start) =>
+    formatTimeRangeFromStart(start, activeTimetableViewConfig.slotDurationMinutes),
+  );
+
 
   const renderTimetableView = () => (
     <div className="max-w-4xl mx-auto mt-10 p-6 bg-white border rounded shadow">
@@ -1055,11 +1472,14 @@ const openHandout = (handout: Handout) => {
           <thead>
             <tr className="bg-gray-500 border-b">
                 <th className="p-3 border-r font-medium">Time</th>
-                <th className="p-3 border-r font-medium">Mon</th>
-                <th className="p-3 border-r font-medium">Tue</th>
-                <th className="p-3 border-r font-medium">Wed</th>
-                <th className="p-3 border-r font-medium">Thu</th>
-                <th className="p-3 font-medium">Fri</th>
+                {activeTimetableDays.map((day, dayIndex) => (
+                  <th
+                    key={`timetable-${day}`}
+                    className={`p-3 font-medium ${dayIndex < activeTimetableDays.length - 1 ? 'border-r' : ''}`}
+                  >
+                    {day}
+                  </th>
+                ))}
             </tr>
           </thead>
 
@@ -1067,11 +1487,26 @@ const openHandout = (handout: Handout) => {
   {timetable.map((row, i) => (
     <tr key={i} className="border-b text-black last:border-0">
       
-      <td className="p-3 border-r text-sm text-gray-500">
-        Block {i + 1}
+      <td className="p-3 border-r text-xs text-gray-500 align-top">
+        {activeTimetableTimeLabels[i] || 'No slot'}
       </td>
 
-      {row.map((cell, j) => (
+      {activeTimetableDays.map((day, j) => {
+        const cell = row[j];
+        const rowStart = activeTimetableRowStarts[i];
+        const hasTimeRange = activeTimetableViewConfig.daySlotStarts[day]?.includes(rowStart);
+
+        if (!cell || !hasTimeRange) {
+          return (
+            <td key={`${day}-${i}`} className="p-3 border-r">
+              <div className="w-full min-h-20 rounded text-xs p-2 bg-gray-200 text-gray-500">
+                No slot
+              </div>
+            </td>
+          );
+        }
+
+        return (
         <td key={j} className="p-3 border-r">
           <div
             onClick={() => toggleCell(i, j)}
@@ -1085,7 +1520,8 @@ const openHandout = (handout: Handout) => {
             <p className="text-[10px] leading-tight mt-1 whitespace-normal break-words">{cell.topic}</p>
           </div>
         </td>
-      ))}
+      );
+      })}
       
     </tr>
   ))}

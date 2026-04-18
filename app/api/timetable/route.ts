@@ -16,9 +16,16 @@ type HandoutInput = {
   dataUrl: string;
 };
 
+type StudyPreferencesInput = {
+  workingDays: string[];
+  workingHoursByDay: Record<string, { start: string; end: string }>;
+  slotDurationMinutes: number;
+};
+
 type TimetableRequestBody = {
   model?: string;
   subjects?: SubjectInput[];
+  studyPreferences?: StudyPreferencesInput;
   handouts?: HandoutInput[];
   prompt?: string;
   conversation?: Array<{
@@ -57,6 +64,8 @@ type HandoutExtractionResult = {
 
 const MAX_CHARS_PER_HANDOUT = 4000;
 const MAX_TOTAL_HANDOUT_CHARS = 24000;
+const VALID_WEEK_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DEFAULT_DAY_RANGE = { start: "08:00", end: "12:00" };
 
 function logDebug(enabled: boolean, label: string, payload: unknown) {
   if (!enabled) return;
@@ -315,7 +324,52 @@ function extractJsonObject(text: string): string | null {
   return null;
 }
 
-function normalizeTimetable(parsed: unknown): TimetablePayload | null {
+function parseTimeToMinutes(value: string): number | null {
+  const match = value.match(/^(\d{2}):(\d{2})$/);
+  if (!match) return null;
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+
+  return hours * 60 + minutes;
+}
+
+function formatMinutesTo12Hour(totalMinutes: number): string {
+  const bounded = Math.max(0, Math.min(totalMinutes, 24 * 60 - 1));
+  const hours24 = Math.floor(bounded / 60);
+  const minutes = bounded % 60;
+  const suffix = hours24 >= 12 ? "pm" : "am";
+  const hours12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
+
+  return `${hours12}:${minutes.toString().padStart(2, "0")} ${suffix}`;
+}
+
+function buildDaySlotStarts(
+  day: string,
+  studyPreferences: StudyPreferencesInput,
+): number[] {
+  const range = studyPreferences.workingHoursByDay[day] || DEFAULT_DAY_RANGE;
+  const start = parseTimeToMinutes(range.start);
+  const end = parseTimeToMinutes(range.end);
+  const slotDuration = Math.max(15, studyPreferences.slotDurationMinutes || 60);
+
+  if (start === null || end === null || end <= start) return [];
+
+  const slotCount = Math.floor((end - start) / slotDuration);
+  if (slotCount <= 0) return [];
+
+  return Array.from({ length: slotCount }, (_, index) => start + index * slotDuration);
+}
+
+function normalizeTimetable(
+  parsed: unknown,
+  expectedRows: number,
+  expectedCols: number,
+  orderedWorkingDays: string[],
+): TimetablePayload | null {
   if (!parsed) return null;
 
   const toCell = (cell: unknown): TimetableCell | null => {
@@ -341,7 +395,7 @@ function normalizeTimetable(parsed: unknown): TimetablePayload | null {
     timetable = parsedObj.timetable;
 
     if (!Array.isArray(timetable)) {
-      const weekdayKeys = ["mon", "tue", "wed", "thu", "fri"];
+      const weekdayKeys = orderedWorkingDays.map((day) => day.toLowerCase());
       const hasWeekdayShape = weekdayKeys.every((key) =>
         Array.isArray(parsedObj[key]),
       );
@@ -350,7 +404,10 @@ function normalizeTimetable(parsed: unknown): TimetablePayload | null {
         const dayColumns = weekdayKeys.map(
           (key) => parsedObj[key] as unknown[],
         );
-        const maxRows = Math.min(4, ...dayColumns.map((col) => col.length));
+        const maxRows = Math.min(
+          expectedRows,
+          ...dayColumns.map((col) => col.length),
+        );
         const rebuilt: unknown[][] = [];
 
         for (let row = 0; row < maxRows; row += 1) {
@@ -370,33 +427,43 @@ function normalizeTimetable(parsed: unknown): TimetablePayload | null {
   const rowCount = rows.length;
   const minColCount = Math.min(...rows.map((row) => row.length));
 
-  // Preferred shape for UI table: 4 blocks x 5 days.
-  if (rowCount >= 4 && minColCount >= 5) {
-    const normalized = rows.slice(0, 4).map((row) =>
+  if (rowCount > 0 && minColCount >= expectedCols) {
+    const normalized = rows.slice(0, expectedRows).map((row) =>
       row
-        .slice(0, 5)
+        .slice(0, expectedCols)
         .map(toCell)
         .filter((cell): cell is TimetableCell => cell !== null),
     );
 
-    if (normalized.every((row) => row.length === 5)) {
+    while (normalized.length < expectedRows) {
+      normalized.push(
+        Array.from({ length: expectedCols }, () => ({
+          subject: "No Slot",
+          topic: "Outside working hours",
+        })),
+      );
+    }
+
+    if (normalized.every((row) => row.length === expectedCols)) {
       return { timetable: normalized };
     }
   }
 
-  // Alternate shape some models return: 5 days x N blocks. Convert to 4x5.
-  if (rowCount === 5 && minColCount >= 4) {
-    const transposed: TimetableCell[][] = Array.from({ length: 4 }, () => []);
+  if (rowCount === expectedCols && minColCount >= expectedRows) {
+    const transposed: TimetableCell[][] = Array.from(
+      { length: expectedRows },
+      () => [],
+    );
 
-    for (let dayIndex = 0; dayIndex < 5; dayIndex += 1) {
-      for (let blockIndex = 0; blockIndex < 4; blockIndex += 1) {
+    for (let dayIndex = 0; dayIndex < expectedCols; dayIndex += 1) {
+      for (let blockIndex = 0; blockIndex < expectedRows; blockIndex += 1) {
         const cell = toCell(rows[dayIndex][blockIndex]);
         if (!cell) return null;
         transposed[blockIndex].push(cell);
       }
     }
 
-    if (transposed.every((row) => row.length === 5)) {
+    if (transposed.every((row) => row.length === expectedCols)) {
       return { timetable: transposed };
     }
   }
@@ -437,6 +504,64 @@ export async function POST(req: Request) {
         )
       : [];
 
+    const studyPreferences: StudyPreferencesInput = {
+      workingDays: Array.isArray(body?.studyPreferences?.workingDays)
+        ? body.studyPreferences.workingDays.filter(
+            (day): day is string =>
+              typeof day === "string" && VALID_WEEK_DAYS.includes(day),
+          )
+        : ["Mon", "Tue", "Wed", "Thu", "Fri"],
+      workingHoursByDay: VALID_WEEK_DAYS.reduce<
+        Record<string, { start: string; end: string }>
+      >((acc, day) => {
+        const candidate = (
+          body?.studyPreferences?.workingHoursByDay as
+            | Record<string, { start?: unknown; end?: unknown }>
+            | undefined
+        )?.[day];
+
+        acc[day] = {
+          start:
+            typeof candidate?.start === "string"
+              ? candidate.start
+              : DEFAULT_DAY_RANGE.start,
+          end:
+            typeof candidate?.end === "string"
+              ? candidate.end
+              : DEFAULT_DAY_RANGE.end,
+        };
+
+        return acc;
+      }, {}),
+      slotDurationMinutes:
+        typeof body?.studyPreferences?.slotDurationMinutes === "number" &&
+        body.studyPreferences.slotDurationMinutes >= 15
+          ? Math.floor(body.studyPreferences.slotDurationMinutes)
+          : 60,
+    };
+
+    if (studyPreferences.workingDays.length === 0) {
+      studyPreferences.workingDays = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+    }
+
+    const orderedWorkingDays = VALID_WEEK_DAYS.filter((day) =>
+      studyPreferences.workingDays.includes(day),
+    );
+    const daySlotStarts = orderedWorkingDays.reduce<Record<string, number[]>>(
+      (acc, day) => {
+        acc[day] = buildDaySlotStarts(day, studyPreferences);
+        return acc;
+      },
+      {},
+    );
+    const allSlotStarts = Array.from(
+      new Set(orderedWorkingDays.flatMap((day) => daySlotStarts[day] || [])),
+    ).sort((a, b) => a - b);
+    const fallbackStart = parseTimeToMinutes(DEFAULT_DAY_RANGE.start) ?? 8 * 60;
+    const rowSlotStarts = allSlotStarts.length > 0 ? allSlotStarts : [fallbackStart];
+    const expectedRows = rowSlotStarts.length;
+    const expectedCols = Math.max(1, orderedWorkingDays.length);
+
     if (subjects.length === 0) {
       return NextResponse.json(
         { error: "subjects is required and must be a non-empty array." },
@@ -471,7 +596,12 @@ export async function POST(req: Request) {
       : [];
 
     const previousTimetableNormalized = Array.isArray(body.previousTimetable)
-      ? normalizeTimetable({ timetable: body.previousTimetable })
+      ? normalizeTimetable(
+          { timetable: body.previousTimetable },
+          expectedRows,
+          expectedCols,
+          orderedWorkingDays,
+        )
       : null;
 
     const subjectNameById = new Map(
@@ -567,21 +697,60 @@ export async function POST(req: Request) {
             .join("\n")
         : "No previous timetable available.";
 
+    const dayScheduleContext = orderedWorkingDays
+      .map((day) => {
+        const ranges = (daySlotStarts[day] || []).map(
+          (slotStart) =>
+            `${formatMinutesTo12Hour(slotStart)} - ${formatMinutesTo12Hour(slotStart + studyPreferences.slotDurationMinutes)}`,
+        );
+        if (ranges.length === 0) {
+          return `- ${day}: no valid slots after rounding down by slot duration.`;
+        }
+
+        return `- ${day}: ${ranges.join(" | ")}`;
+      })
+      .join("\n");
+
+    const rowTimesContext = rowSlotStarts
+      .map(
+        (slotStart, index) =>
+          `Row ${index + 1}: ${formatMinutesTo12Hour(slotStart)} - ${formatMinutesTo12Hour(
+            slotStart + studyPreferences.slotDurationMinutes,
+          )}`,
+      )
+      .join("\n");
+
+    const studyPreferencesContext = [
+      `Working days selected by user (Sun to Sat options): ${studyPreferences.workingDays.join(", ")}`,
+      "Working hours per selected day:",
+      dayScheduleContext,
+      `Preferred slot duration (minutes): ${studyPreferences.slotDurationMinutes}`,
+      `Expected timetable shape: ${expectedRows} rows x ${expectedCols} columns in this day order: ${orderedWorkingDays.join(", ")}.`,
+      "Row-to-time mapping (use this exact row order):",
+      rowTimesContext,
+      "Use these preferences to shape workload intensity and topic depth across timetable blocks.",
+      "Do not schedule study entries beyond the user's end time for any day.",
+      'If a day does not have availability for a row time, return {"subject":"No Slot","topic":"Outside working hours"} for that cell.',
+    ].join("\n");
+
     const systemPrompt =
       "You are an academic planning assistant. Build a weekly timetable from subjects, student strength scores, and handout content. " +
       "Handouts contain what should be studied in each subject. Scores are from 1 to 5 where 5 means strongest and 1 means weakest. " +
       "Give more time and foundational topics to weaker subjects and advanced revision to stronger subjects. " +
       "When the user asks to edit or change a timetable, treat the previous timetable as the baseline and modify it instead of creating an unrelated new plan. " +
       'Return strict JSON only with this schema: {"timetable":[[{"subject":"...","topic":"..."}]]}. ' +
-      "It must be exactly 4 rows and each row must contain exactly 5 cells. " +
+      `It must be exactly ${expectedRows} rows and each row must contain exactly ${expectedCols} cells. ` +
       "Do not output markdown, code fences, explanations, tips, or a daily routine. " +
       "Do not use vague placeholder topics such as 'Advanced Topics', 'Foundational Topics', 'Intermediate Topics', or 'Revision' unless those exact phrases appear in handout excerpts.";
 
     const userPrompt = [
-      "Create a timetable for Monday to Friday with 4 study blocks per day.",
-      "Important: The JSON timetable must be exactly 4 rows (Block 1 to Block 4) and 5 columns (Mon to Fri).",
+      `Create a timetable only for these days in order: ${orderedWorkingDays.join(", ")}.`,
+      `Important: The JSON timetable must be exactly ${expectedRows} rows and each row must contain exactly ${expectedCols} cells (columns).`,
       "Subject strengths:",
       subjectContext,
+      "",
+      "Study preferences:",
+      studyPreferencesContext,
       "",
       "Handout excerpts:",
       handoutContext,
@@ -747,7 +916,12 @@ export async function POST(req: Request) {
       );
     }
 
-    const normalized = normalizeTimetable(parsedOutput);
+    const normalized = normalizeTimetable(
+      parsedOutput,
+      expectedRows,
+      expectedCols,
+      orderedWorkingDays,
+    );
 
     logDebug(debugEnabled, "timetable.normalization", {
       isValid: Boolean(normalized),
@@ -773,7 +947,40 @@ export async function POST(req: Request) {
       );
     }
 
-    return NextResponse.json(normalized);
+    const weakestSubject = [...subjects].sort((a, b) => {
+      const scoreA = a.score === null ? 3 : a.score;
+      const scoreB = b.score === null ? 3 : b.score;
+      return scoreA - scoreB;
+    })[0];
+
+    const correctedTimetable = normalized.timetable.map((row, rowIndex) =>
+      row.map((cell, colIndex) => {
+        const day = orderedWorkingDays[colIndex];
+        const rowStart = rowSlotStarts[rowIndex];
+        const hasAvailability = (daySlotStarts[day] || []).includes(rowStart);
+        const isNoSlotCell =
+          cell.subject.trim().toLowerCase() === "no slot" ||
+          cell.topic.trim().toLowerCase() === "outside working hours";
+
+        if (!hasAvailability) {
+          return {
+            subject: "No Slot",
+            topic: "Outside working hours",
+          };
+        }
+
+        if (hasAvailability && isNoSlotCell) {
+          return {
+            subject: weakestSubject?.name || "Study Session",
+            topic: "Planned study session",
+          };
+        }
+
+        return cell;
+      }),
+    );
+
+    return NextResponse.json({ timetable: correctedTimetable });
   } catch (error) {
     console.error("Timetable generation error:", error);
     return NextResponse.json(
