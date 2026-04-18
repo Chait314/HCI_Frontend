@@ -361,13 +361,19 @@ const getHandout = (subjectId: number) => {
   );
 
 
+  type ChatTimetableCell = {
+    subject: string;
+    topic: string;
+  };
+
   interface Chats {
     chat_id : string;
     chat_name: string;
     messages: {
       role: 'user' | 'ai';
       message: string;
-      type?: 'text' | 'timetable'
+      type?: 'text' | 'timetable';
+      timetable?: ChatTimetableCell[][];
     }[];
   }
 
@@ -419,13 +425,19 @@ const getHandout = (subjectId: number) => {
     setIsSending(true);
 
     try {
-        const res = await fetch('/api/chat', {
+        const res = await fetch('/api/timetable', {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json' 
       },
       body: JSON.stringify({
-        messages: [{ role: 'user', content: input }]
+        prompt: input,
+        subjects: subjects.map((subject) => ({
+          id: subject.id,
+          name: subject.name,
+          score: subject.strength === null ? null : subject.strength + 1,
+        })),
+        handouts,
       })
     });
 
@@ -435,7 +447,25 @@ const getHandout = (subjectId: number) => {
       throw new Error(data?.error || 'Chat request failed');
     }
 
-    console.log(data);
+    const generatedRows = Array.isArray(data?.timetable) ? data.timetable : [];
+
+    if (generatedRows.length !== 4 || generatedRows.some((row: unknown) => !Array.isArray(row) || row.length !== 5)) {
+      throw new Error('Timetable format was invalid. Please try again.');
+    }
+
+    const nextTimetable = generatedRows.map((row: Array<{ subject: string; topic: string }>) =>
+      row.map((cell) => ({
+        subject: cell.subject,
+        topic: cell.topic,
+        completed: false,
+      }))
+    );
+
+    setTimetable(nextTimetable);
+
+    const chatTimetable = nextTimetable.map((row: Cell[]) =>
+      row.map((cell: Cell) => ({ subject: cell.subject, topic: cell.topic }))
+    );
 
     // Add bot response
     setChats(prevChats =>
@@ -445,7 +475,12 @@ const getHandout = (subjectId: number) => {
               ...chat,
               messages: [
                 ...chat.messages,
-                { role: 'ai',type: 'timetable', message: data.reply }
+                {
+                  role: 'ai',
+                  type: 'timetable',
+                  message: 'Here is your generated timetable.',
+                  timetable: chatTimetable,
+                }
               ]
             }
           : chat
@@ -497,16 +532,52 @@ const getHandout = (subjectId: number) => {
     className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
   >
     <div
-      className={`p-4 rounded-lg max-w-md shadow-sm ${
+      className={`p-4 rounded-lg shadow-sm ${
+        msg.type === 'timetable' ? 'max-w-4xl w-full' : 'max-w-md'
+      } ${
         msg.role === 'user'
           ? 'bg-gray-100 text-gray-800 rounded-tr-none'
           : 'bg-gray-800 text-white rounded-tl-none'
       }`}
     >
       {msg.role === 'user' && <p>{msg.message}</p>}
-      {/* TEXT MESSAGE */}
-      
-      {msg.type === 'timetable' && <p>{msg.message}</p>}
+
+      {msg.role === 'ai' && msg.type !== 'timetable' && <p>{msg.message}</p>}
+
+      {msg.type === 'timetable' && msg.timetable && (
+        <div className="space-y-3">
+          <p className="text-sm text-gray-100">{msg.message}</p>
+          <div className="border border-gray-600 rounded-lg overflow-x-auto">
+            <table className="w-full text-left border-collapse min-w-[700px]">
+              <thead>
+                <tr className="bg-gray-600 border-b border-gray-500">
+                  <th className="p-3 border-r border-gray-500 font-medium">Time</th>
+                  <th className="p-3 border-r border-gray-500 font-medium">Mon</th>
+                  <th className="p-3 border-r border-gray-500 font-medium">Tue</th>
+                  <th className="p-3 border-r border-gray-500 font-medium">Wed</th>
+                  <th className="p-3 border-r border-gray-500 font-medium">Thu</th>
+                  <th className="p-3 font-medium">Fri</th>
+                </tr>
+              </thead>
+              <tbody>
+                {msg.timetable.map((row, rowIndex) => (
+                  <tr key={rowIndex} className="border-b border-gray-600 last:border-0 text-white">
+                    <td className="p-3 border-r border-gray-600 text-sm text-gray-300">Block {rowIndex + 1}</td>
+                    {row.map((cell, colIndex) => (
+                      <td key={colIndex} className="p-3 border-r border-gray-600 last:border-r-0 align-top">
+                        <div className="w-full rounded text-xs p-1 bg-gray-700">
+                          <p className="font-medium">{cell.subject}</p>
+                          <p className="text-[10px] text-gray-200">{cell.topic}</p>
+                        </div>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
       
     </div>
   </div>
@@ -544,43 +615,97 @@ const getHandout = (subjectId: number) => {
     </div>
   );
 
-  // Screen 4: Timetable View
-  const subjectTopics = {
-  Mathematics: [
-    'Limits', 'Derivatives', 'Integrals', 'Matrices', 'Probability', 'Vectors'
-  ],
-  Literature: [
-    'Poetry Analysis', 'Shakespeare', 'Essays', 'Prose', 'Drama', 'Literary Devices'
-  ],
-  Politics: [
-    'Constitution', 'Ideologies', 'Elections', 'Public Policy', 'International Relations', 'Governance'
-  ]
-};
-
-const getRandomTopic = (subject: keyof typeof subjectTopics) => {
-  const topics = subjectTopics[subject];
-  return topics[Math.floor(Math.random() * topics.length)];
-};
-const subjos = ['Mathematics', 'Literature', 'Politics'];
-
   type Cell = {
       subject: string;
       topic: string;
       completed: boolean;
   };
+
+  const [isGeneratingTimetable, setIsGeneratingTimetable] = useState(false);
+  const [timetableError, setTimetableError] = useState('');
+
+  const createFallbackTimetable = () => {
+    if (subjects.length === 0) {
+      return Array.from({ length: 4 }, () =>
+        Array.from({ length: 5 }, () => ({
+          subject: 'General Study',
+          topic: 'Revision',
+          completed: false,
+        }))
+      );
+    }
+
+    return Array.from({ length: 4 }, () =>
+      Array.from({ length: 5 }, (_, colIndex) => {
+        const sub = subjects[colIndex % subjects.length];
+        return {
+          subject: sub.name,
+          topic: 'Revision',
+          completed: false,
+        };
+      })
+    );
+  };
     
 const [timetable, setTimetable] = useState<Cell[][]>(() => {
-  return Array.from({ length: 4 }, () =>
-    Array.from({ length: 5 }, () => {
-      const subjs = subjects[Math.floor(Math.random() * subjects.length)];
-      return {
-        subject: subjs.name,
-        topic: getRandomTopic(subjs.name as keyof typeof subjectTopics),
-        completed: false
-      };
-    })
-  );
+  return createFallbackTimetable();
 });
+
+const generateTimetableWithAI = async () => {
+  if (subjects.length === 0) {
+    setTimetableError('Please add at least one subject before generating a timetable.');
+    return;
+  }
+
+  setIsGeneratingTimetable(true);
+  setTimetableError('');
+
+  try {
+    const response = await fetch('/api/timetable', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subjects: subjects.map((subject) => ({
+          id: subject.id,
+          name: subject.name,
+          score: subject.strength === null ? null : subject.strength + 1,
+        })),
+        handouts,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data?.error || 'Failed to generate timetable.');
+    }
+
+    const generatedRows = Array.isArray(data?.timetable) ? data.timetable : [];
+
+    if (generatedRows.length !== 4 || generatedRows.some((row: unknown) => !Array.isArray(row) || row.length !== 5)) {
+      throw new Error('Timetable format was invalid. Please try again.');
+    }
+
+    setTimetable(
+      generatedRows.map((row: Array<{ subject: string; topic: string }>) =>
+        row.map((cell) => ({
+          subject: cell.subject,
+          topic: cell.topic,
+          completed: false,
+        }))
+      )
+    );
+
+    setCurrentStep('timetable');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to generate timetable.';
+    setTimetableError(message);
+  } finally {
+    setIsGeneratingTimetable(false);
+  }
+};
 
   const toggleCell = (rowIndex: number, colIndex: number) => {
     setTimetable(prev =>
@@ -699,8 +824,20 @@ const openHandout = (handout: Handout) => {
 
   const renderTimetableView = () => (
     <div className="max-w-4xl mx-auto mt-10 p-6 bg-white border rounded shadow">
-      <h2 className="text-xl font-medium text-gray-800 mb-2">We're glad you liked it!</h2>
+      <div className="flex justify-between items-center mb-2">
+        <h2 className="text-xl font-medium text-gray-800">We're glad you liked it!</h2>
+        <button
+          onClick={() => void generateTimetableWithAI()}
+          disabled={isGeneratingTimetable}
+          className="px-4 py-2 bg-green-700 text-white text-sm rounded hover:bg-green-800 disabled:bg-green-400 disabled:cursor-not-allowed"
+        >
+          {isGeneratingTimetable ? 'Generating...' : 'Regenerate with AI'}
+        </button>
+      </div>
       <p className="text-gray-600 mb-6">You can track your progress by marking green when you finished a task, else we'll mark it red.</p>
+      {timetableError && (
+        <p className="text-sm text-red-600 mb-4">{timetableError}</p>
+      )}
       
       <div className="border rounded-lg overflow-hidden">
         <table className="w-full text-left border-collapse">
@@ -770,9 +907,9 @@ const openHandout = (handout: Handout) => {
                   <div className="w-32 h-24 bg-gray-100 mb-2 border grid grid-cols-4 gap-0.5 p-1"><div className="bg-green-300"></div><div className="bg-red-300"></div></div>
                   <span className="text-sm text-gray-600">My_timetable1</span>
                 </div>
-                <div className="w-48 h-48 border-2 border-dashed border-gray-300 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 transition text-gray-500">
+                <div onClick={() => void generateTimetableWithAI()} className="w-48 h-48 border-2 border-dashed border-gray-300 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 transition text-gray-500">
                   <span className="text-3xl mb-2">+</span>
-                  <span className="text-sm">Create Custom</span>
+                  <span className="text-sm">{isGeneratingTimetable ? 'Generating...' : 'Generate with AI'}</span>
                 </div>
             </div>
         )}
