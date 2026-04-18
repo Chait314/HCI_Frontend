@@ -903,10 +903,6 @@ const openHandout = (handout: Handout) => {
         {/* Placeholder for dashboard screen from wireframe */}
         {currentStep === 'dashboard' && (
             <div className="max-w-4xl mx-auto mt-10 p-6 flex space-x-6">
-                <div onClick={() => setCurrentStep('timetable')} className="w-48 h-48 bg-white border rounded shadow flex flex-col items-center justify-center cursor-pointer hover:shadow-md transition">
-                  <div className="w-32 h-24 bg-gray-100 mb-2 border grid grid-cols-4 gap-0.5 p-1"><div className="bg-green-300"></div><div className="bg-red-300"></div></div>
-                  <span className="text-sm text-gray-600">My_timetable1</span>
-                </div>
                 <div onClick={() => void generateTimetableWithAI()} className="w-48 h-48 border-2 border-dashed border-gray-300 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 transition text-gray-500">
                   <span className="text-3xl mb-2">+</span>
                   <span className="text-sm">{isGeneratingTimetable ? 'Generating...' : 'Generate with AI'}</span>
