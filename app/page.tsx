@@ -366,6 +366,14 @@ const getHandout = (subjectId: number) => {
     topic: string;
   };
 
+  type SavedTimetable = {
+    id: string;
+    source: 'chat' | 'timetable-screen';
+    createdAt: string;
+    signature: string;
+    timetable: ChatTimetableCell[][];
+  };
+
   type ConversationTurn = {
     role: 'user' | 'assistant';
     content: string;
@@ -375,19 +383,127 @@ const getHandout = (subjectId: number) => {
     chat_id : string;
     chat_name: string;
     messages: {
+      id: string;
       role: 'user' | 'ai';
       message: string;
       type?: 'text' | 'timetable';
       timetable?: ChatTimetableCell[][];
+      accepted?: boolean;
     }[];
   }
 
   const [chats, setChats] = useState<Chats[]>([]);
+  const [savedTimetables, setSavedTimetables] = useState<SavedTimetable[]>([]);
+  const [isViewingSavedTimetable, setIsViewingSavedTimetable] = useState(false);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [sendTex, setSendTex] = useState('');
 
   const [isSending, setIsSending] = useState(false);
+
+  const toChatTimetableCells = (rows: Cell[][]): ChatTimetableCell[][] =>
+    rows.map((row) => row.map((cell) => ({ subject: cell.subject, topic: cell.topic })));
+
+  const getTimetableSignature = (rows: ChatTimetableCell[][]) =>
+    JSON.stringify(rows.map((row) => row.map((cell) => ({ subject: cell.subject, topic: cell.topic }))));
+
+  useEffect(() => {
+    const saved = localStorage.getItem('acceptedTimetables');
+    if (!saved) return;
+
+    try {
+      const parsed = JSON.parse(saved);
+      if (!Array.isArray(parsed)) return;
+
+      const normalized: SavedTimetable[] = parsed
+        .map((item) => ({
+          id: typeof item?.id === 'string' ? item.id : `${Date.now()}-${Math.random()}`,
+          source: (item?.source === 'chat' ? 'chat' : 'timetable-screen') as SavedTimetable['source'],
+          createdAt: typeof item?.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
+          signature: typeof item?.signature === 'string' ? item.signature : '',
+          timetable: Array.isArray(item?.timetable) ? item.timetable : [],
+        }))
+        .filter((item) => item.signature && Array.isArray(item.timetable));
+
+      setSavedTimetables(normalized);
+    } catch (error) {
+      console.error('Failed to parse accepted timetables:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('acceptedTimetables', JSON.stringify(savedTimetables));
+  }, [savedTimetables]);
+
+  const saveAcceptedTimetable = (
+    timetableRows: ChatTimetableCell[][],
+    source: SavedTimetable['source'],
+  ) => {
+    const signature = getTimetableSignature(timetableRows);
+    const alreadyExists = savedTimetables.some((item) => item.signature === signature);
+    if (alreadyExists) return false;
+
+    const record: SavedTimetable = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      source,
+      createdAt: new Date().toISOString(),
+      signature,
+      timetable: timetableRows,
+    };
+
+    setSavedTimetables((prev) => [record, ...prev]);
+    return true;
+  };
+
+  const handleAcceptChatTimetable = (
+    chatId: string,
+    messageId: string,
+    timetableRows: ChatTimetableCell[][],
+  ) => {
+    saveAcceptedTimetable(timetableRows, 'chat');
+
+    setChats((prevChats) =>
+      prevChats.map((chat) =>
+        chat.chat_id === chatId
+          ? {
+              ...chat,
+              messages: chat.messages.map((message) =>
+                message.id === messageId
+                  ? { ...message, accepted: true }
+                  : message,
+              ),
+            }
+          : chat,
+      ),
+    );
+  };
+
+  const isCurrentTimetableAccepted = () => {
+    const signature = getTimetableSignature(toChatTimetableCells(timetable));
+    return savedTimetables.some((item) => item.signature === signature);
+  };
+
+  const handleAcceptTimetableScreen = () => {
+    saveAcceptedTimetable(toChatTimetableCells(timetable), 'timetable-screen');
+  };
+
+  const openSavedTimetable = (saved: SavedTimetable) => {
+    const reopened = saved.timetable.map((row) =>
+      row.map((cell) => ({
+        subject: cell.subject,
+        topic: cell.topic,
+        completed: false,
+      })),
+    );
+
+    setTimetable(reopened);
+    setIsViewingSavedTimetable(true);
+    setCurrentStep('timetable');
+  };
+
+  const deleteSavedTimetable = (savedId: string) => {
+    setSavedTimetables((prev) => prev.filter((item) => item.id !== savedId));
+  };
 
   const createNewChat = () => {
     const newChat: Chats = {
@@ -449,7 +565,11 @@ const getHandout = (subjectId: number) => {
               ...chat,
               messages: [
                 ...chat.messages,
-                { role: 'user', message: input }
+                {
+                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+                  role: 'user',
+                  message: input,
+                }
               ]
             }
           : chat
@@ -516,10 +636,12 @@ const getHandout = (subjectId: number) => {
               messages: [
                 ...chat.messages,
                 {
+                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
                   role: 'ai',
                   type: 'timetable',
                   message: 'Here is your generated timetable.',
                   timetable: chatTimetable,
+                  accepted: false,
                 }
               ]
             }
@@ -616,6 +738,27 @@ const getHandout = (subjectId: number) => {
               </tbody>
             </table>
           </div>
+          {(() => {
+            const hasLaterUserMessage = Boolean(
+              currentChat?.messages
+                .slice(index + 1)
+                .some((message) => message.role === 'user'),
+            );
+            const shouldDisableAccept = Boolean(msg.accepted) || hasLaterUserMessage;
+
+            return (
+              <button
+                onClick={() => {
+                  if (!currentChatId || !msg.timetable) return;
+                  handleAcceptChatTimetable(currentChatId, msg.id, msg.timetable);
+                }}
+                disabled={shouldDisableAccept}
+                className="px-3 py-1 text-xs rounded bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
+              >
+                {msg.accepted ? 'Accepted' : hasLaterUserMessage ? 'Accept (expired)' : 'Accept'}
+              </button>
+            );
+          })()}
         </div>
       )}
       
@@ -744,6 +887,7 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
       )
     );
 
+    setIsViewingSavedTimetable(false);
     setCurrentStep('timetable');
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to generate timetable.';
@@ -882,13 +1026,24 @@ const openHandout = (handout: Handout) => {
     <div className="max-w-4xl mx-auto mt-10 p-6 bg-white border rounded shadow">
       <div className="flex justify-between items-center mb-2">
         <h2 className="text-xl font-medium text-gray-800">We're glad you liked it!</h2>
-        <button
-          onClick={() => void handleRegenerateWithSuggestion()}
-          disabled={isGeneratingTimetable}
-          className="px-4 py-2 bg-green-700 text-white text-sm rounded hover:bg-green-800 disabled:bg-green-400 disabled:cursor-not-allowed"
-        >
-          {isGeneratingTimetable ? 'Generating...' : 'Regenerate with AI'}
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleAcceptTimetableScreen}
+            disabled={isCurrentTimetableAccepted()}
+            className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
+          >
+            {isCurrentTimetableAccepted() ? 'Accepted' : 'Accept'}
+          </button>
+          {!isViewingSavedTimetable && (
+            <button
+              onClick={() => void handleRegenerateWithSuggestion()}
+              disabled={isGeneratingTimetable}
+              className="px-4 py-2 bg-green-700 text-white text-sm rounded hover:bg-green-800 disabled:bg-green-400 disabled:cursor-not-allowed"
+            >
+              {isGeneratingTimetable ? 'Generating...' : 'Regenerate with AI'}
+            </button>
+          )}
+        </div>
       </div>
       <p className="text-gray-600 mb-6">You can track your progress by marking green when you finished a task, else we'll mark it red.</p>
       {timetableError && (
@@ -958,11 +1113,64 @@ const openHandout = (handout: Handout) => {
         
         {/* Placeholder for dashboard screen from wireframe */}
         {currentStep === 'dashboard' && (
-            <div className="max-w-4xl mx-auto mt-10 p-6 flex space-x-6">
-                <div onClick={() => void generateTimetableWithAI()} className="w-48 h-48 border-2 border-dashed border-gray-300 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 transition text-gray-500">
+            <div className="max-w-6xl mx-auto mt-10 p-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                <button
+                  onClick={() => void generateTimetableWithAI()}
+                  className="w-48 h-48 border-2 border-dashed border-gray-300 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 transition text-gray-500"
+                >
                   <span className="text-3xl mb-2">+</span>
                   <span className="text-sm">{isGeneratingTimetable ? 'Generating...' : 'Generate with AI'}</span>
-                </div>
+                </button>
+
+                {savedTimetables.map((saved) => (
+                  <div
+                    key={saved.id}
+                    className="w-48 h-48 bg-white border border-gray-300 rounded p-2 flex flex-col shadow-sm"
+                  >
+                    <div className="text-[10px] text-gray-500 mb-1 flex justify-between">
+                      <span>{saved.source === 'chat' ? 'From chat' : 'From timetable'}</span>
+                      <span>{new Date(saved.createdAt).toLocaleDateString()}</span>
+                    </div>
+
+                    <div className="flex-1 border border-gray-200 rounded p-1 bg-gray-50 overflow-hidden">
+                      <div className="grid grid-cols-3 gap-1 h-full">
+                        {saved.timetable
+                          .slice(0, 2)
+                          .flatMap((row) => row.slice(0, 3))
+                          .map((cell, index) => (
+                            <div
+                              key={`${saved.id}-${index}`}
+                              className="bg-white border border-gray-200 rounded px-1 py-0.5 overflow-hidden"
+                            >
+                              <p className="text-[9px] font-semibold text-gray-700 leading-tight truncate">
+                                {cell.subject}
+                              </p>
+                              <p className="text-[8px] text-gray-500 leading-tight truncate">
+                                {cell.topic}
+                              </p>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <button
+                        onClick={() => openSavedTimetable(saved)}
+                        className="flex-1 text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+                      >
+                        Open
+                      </button>
+                      <button
+                        onClick={() => deleteSavedTimetable(saved.id)}
+                        className="flex-1 text-xs px-2 py-1 bg-red-500 text-white rounded hover:bg-red-600"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
         )}
       </main>
