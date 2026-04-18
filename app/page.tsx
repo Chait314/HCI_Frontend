@@ -637,6 +637,7 @@ const getHandout = (subjectId: number) => {
   };
 
   type SavedTimetable = {
+    name: string;
     id: string;
     source: 'chat' | 'timetable-screen';
     createdAt: string;
@@ -799,6 +800,7 @@ const getHandout = (subjectId: number) => {
           const viewConfig = normalizeViewConfig(item?.viewConfig, rows);
 
           return {
+            name: typeof item?.name === 'string' ? item.name : 'new_tt',
             id: typeof item?.id === 'string' ? item.id : `${Date.now()}-${Math.random()}`,
             source: (item?.source === 'chat' ? 'chat' : 'timetable-screen') as SavedTimetable['source'],
             createdAt: typeof item?.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
@@ -832,6 +834,7 @@ const getHandout = (subjectId: number) => {
     if (alreadyExists) return false;
 
     const record: SavedTimetable = {
+      name: `new_tt_${savedTimetables.length + 1}`,
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       source,
       createdAt: new Date().toISOString(),
@@ -1561,6 +1564,22 @@ const openHandout = (handout: Handout) => {
     </div>
   );
 
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [newName, setNewName] = useState("");
+
+
+  const handleRename = (id: string) => {
+  if (!newName.trim()) return;
+
+  setSavedTimetables((prev) =>
+    prev.map((tt) =>
+      tt.id === id ? { ...tt, name: newName } : tt
+    )
+  );
+
+  setEditingId(null);
+};
+
   return (
     <div className="min-h-screen bg-gray-100 font-sans">
       {renderHeader()}
@@ -1585,52 +1604,83 @@ const openHandout = (handout: Handout) => {
                 </button>
 
                 {savedTimetables.map((saved) => (
-                  <div
-                    key={saved.id}
-                    className="w-48 h-48 bg-white border border-gray-300 rounded p-2 flex flex-col shadow-sm"
-                  >
-                    <div className="text-[10px] text-gray-500 mb-1 flex justify-between">
-                      <span>{saved.source === 'chat' ? 'From chat' : 'From timetable'}</span>
-                      <span>{new Date(saved.createdAt).toLocaleDateString()}</span>
-                    </div>
+                      <div
+                        key={saved.id}
+                        className="w-64 bg-white border border-gray-200 rounded-xl p-3 shadow-sm hover:shadow-md transition flex flex-col"
+                      >
+                        {/* Header */}
+                        <div className="flex justify-between items-start mb-2">
+                          <div>
+                            {editingId === saved.id ? (
+                              <input
+                                value={newName}
+                                onChange={(e) => setNewName(e.target.value)}
+                                onBlur={() => handleRename(saved.id)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") handleRename(saved.id);
+                                }}
+                                className="text-sm font-semibold text-gray-800 border-b border-blue-500 outline-none w-full"
+                                autoFocus
+                              />
+                            ) : (
+                              <p
+                                onClick={() => {
+                                  setEditingId(saved.id);
+                                  setNewName(saved.name);
+                                }}
+                                className="text-sm font-semibold text-gray-800 truncate cursor-pointer hover:underline"
+                              >
+                                {saved.name}
+                              </p>
+                            )}
+                            <p className="text-xs text-gray-500">
+                              {saved.source === 'chat' ? 'From chat' : 'From timetable'}
+                            </p>
+                          </div>
+                          <span className="text-[10px] text-gray-400">
+                            {new Date(saved.createdAt).toLocaleDateString()}
+                          </span>
+                        </div>
 
-                    <div className="flex-1 border border-gray-200 rounded p-1 bg-gray-50 overflow-hidden">
-                      <div className="grid grid-cols-3 gap-1 h-full">
-                        {saved.timetable
-                          .slice(0, 2)
-                          .flatMap((row) => row.slice(0, 3))
-                          .map((cell, index) => (
-                            <div
-                              key={`${saved.id}-${index}`}
-                              className="bg-white border border-gray-200 rounded px-1 py-0.5 overflow-hidden"
-                            >
-                              <p className="text-[9px] font-semibold text-gray-700 leading-tight truncate">
-                                {cell.subject}
-                              </p>
-                              <p className="text-[8px] text-gray-500 leading-tight truncate">
-                                {cell.topic}
-                              </p>
-                            </div>
-                          ))}
+                        {/* Preview */}
+                        <div className="border border-gray-100 rounded-lg p-2 bg-gray-50 mb-3">
+                          <div className="grid grid-cols-3 gap-2">
+                            {saved.timetable
+                              .slice(0, 2)
+                              .flatMap((row) => row.slice(0, 3))
+                              .map((cell, index) => (
+                                <div
+                                  key={`${saved.id}-${index}`}
+                                  className="bg-white border border-gray-100 rounded-md p-1"
+                                >
+                                  <p className="text-xs font-medium text-gray-700 truncate">
+                                    {cell.subject}
+                                  </p>
+                                  <p className="text-[10px] text-gray-400 truncate">
+                                    {cell.topic}
+                                  </p>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex gap-2 mt-auto">
+                          <button
+                            onClick={() => openSavedTimetable(saved)}
+                            className="flex-1 text-sm px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 hover:cursor-pointer transition"
+                          >
+                            Open
+                          </button>
+                          <button
+                            onClick={() => deleteSavedTimetable(saved.id)}
+                            className="px-3 py-1.5 text-sm text-red-500 hover:bg-red-50 hover:cursor-pointer rounded-lg transition"
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
-                    </div>
-
-                    <div className="mt-2 flex items-center justify-between gap-2">
-                      <button
-                        onClick={() => openSavedTimetable(saved)}
-                        className="flex-1 text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
-                      >
-                        Open
-                      </button>
-                      <button
-                        onClick={() => deleteSavedTimetable(saved.id)}
-                        className="flex-1 text-xs px-2 py-1 bg-red-500 text-white rounded hover:bg-red-600"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                    ))}
               </div>
             </div>
         )}
