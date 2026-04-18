@@ -727,9 +727,9 @@ const getHandout = (subjectId: number) => {
                     <td className="p-3 border-r border-gray-600 text-sm text-gray-300">Block {rowIndex + 1}</td>
                     {row.map((cell, colIndex) => (
                       <td key={colIndex} className="p-3 border-r border-gray-600 last:border-r-0 align-top">
-                        <div className="w-full rounded text-xs p-1 bg-gray-700">
-                          <p className="font-medium">{cell.subject}</p>
-                          <p className="text-[10px] text-gray-200">{cell.topic}</p>
+                        <div className="w-full rounded text-xs p-2 bg-gray-700 min-h-20">
+                          <p className="font-medium leading-tight whitespace-normal break-words">{cell.subject}</p>
+                          <p className="text-[10px] text-gray-200 leading-tight mt-1 whitespace-normal break-words">{cell.topic}</p>
                         </div>
                       </td>
                     ))}
@@ -1075,14 +1075,14 @@ const openHandout = (handout: Handout) => {
         <td key={j} className="p-3 border-r">
           <div
             onClick={() => toggleCell(i, j)}
-            className={`w-full h-12 rounded text-xs p-1 cursor-pointer transition ${
+            className={`w-full min-h-20 rounded text-xs p-2 cursor-pointer transition ${
               cell.completed
                 ? 'bg-green-200'
                 : 'bg-gray-100 hover:bg-gray-200'
             }`}
           >
-            <p className="font-medium">{cell.subject}</p>
-            <p className="text-[10px]">{cell.topic}</p>
+            <p className="font-medium leading-tight whitespace-normal break-words">{cell.subject}</p>
+            <p className="text-[10px] leading-tight mt-1 whitespace-normal break-words">{cell.topic}</p>
           </div>
         </td>
       ))}
