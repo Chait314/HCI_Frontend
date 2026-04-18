@@ -21,6 +21,11 @@ type TimetableRequestBody = {
   subjects?: SubjectInput[];
   handouts?: HandoutInput[];
   prompt?: string;
+  conversation?: Array<{
+    role: "user" | "assistant";
+    content: string;
+  }>;
+  previousTimetable?: TimetableCell[][];
 };
 
 type ProviderResponse = {
@@ -50,8 +55,8 @@ type HandoutExtractionResult = {
   error?: string;
 };
 
-const MAX_CHARS_PER_HANDOUT = 40000;
-const MAX_TOTAL_HANDOUT_CHARS = 1200000;
+const MAX_CHARS_PER_HANDOUT = 4000;
+const MAX_TOTAL_HANDOUT_CHARS = 24000;
 
 function logDebug(enabled: boolean, label: string, payload: unknown) {
   if (!enabled) return;
@@ -311,10 +316,7 @@ function extractJsonObject(text: string): string | null {
 }
 
 function normalizeTimetable(parsed: unknown): TimetablePayload | null {
-  if (!parsed || typeof parsed !== "object") return null;
-
-  const timetable = (parsed as { timetable?: unknown }).timetable;
-  if (!Array.isArray(timetable) || timetable.length === 0) return null;
+  if (!parsed) return null;
 
   const toCell = (cell: unknown): TimetableCell | null => {
     if (!cell || typeof cell !== "object") return null;
@@ -329,6 +331,38 @@ function normalizeTimetable(parsed: unknown): TimetablePayload | null {
       topic: topic.trim() || "Revision",
     };
   };
+
+  let timetable: unknown = null;
+
+  if (Array.isArray(parsed)) {
+    timetable = parsed;
+  } else if (typeof parsed === "object") {
+    const parsedObj = parsed as Record<string, unknown>;
+    timetable = parsedObj.timetable;
+
+    if (!Array.isArray(timetable)) {
+      const weekdayKeys = ["mon", "tue", "wed", "thu", "fri"];
+      const hasWeekdayShape = weekdayKeys.every((key) =>
+        Array.isArray(parsedObj[key]),
+      );
+
+      if (hasWeekdayShape) {
+        const dayColumns = weekdayKeys.map(
+          (key) => parsedObj[key] as unknown[],
+        );
+        const maxRows = Math.min(4, ...dayColumns.map((col) => col.length));
+        const rebuilt: unknown[][] = [];
+
+        for (let row = 0; row < maxRows; row += 1) {
+          rebuilt.push(dayColumns.map((col) => col[row]));
+        }
+
+        timetable = rebuilt;
+      }
+    }
+  }
+
+  if (!Array.isArray(timetable) || timetable.length === 0) return null;
 
   const rows = timetable.map((row) => (Array.isArray(row) ? row : []));
   if (rows.some((row) => row.length === 0)) return null;
@@ -425,6 +459,21 @@ export async function POST(req: Request) {
         )
       : [];
 
+    const conversation = Array.isArray(body.conversation)
+      ? body.conversation
+          .filter(
+            (turn): turn is { role: "user" | "assistant"; content: string } =>
+              (turn?.role === "user" || turn?.role === "assistant") &&
+              typeof turn?.content === "string" &&
+              turn.content.trim().length > 0,
+          )
+          .slice(-10)
+      : [];
+
+    const previousTimetableNormalized = Array.isArray(body.previousTimetable)
+      ? normalizeTimetable({ timetable: body.previousTimetable })
+      : null;
+
     const subjectNameById = new Map(
       subjects.map((subject) => [subject.id, subject.name]),
     );
@@ -495,10 +544,34 @@ export async function POST(req: Request) {
         ? filenameHints.join("\n")
         : "No handout files were provided.";
 
+    const conversationContext =
+      conversation.length > 0
+        ? conversation
+            .map(
+              (turn, index) =>
+                `${index + 1}. ${turn.role.toUpperCase()}: ${turn.content}`,
+            )
+            .join("\n")
+        : "No previous conversation turns.";
+
+    const previousTimetableContext =
+      previousTimetableNormalized &&
+      previousTimetableNormalized.timetable.length > 0
+        ? previousTimetableNormalized.timetable
+            .map(
+              (row, rowIndex) =>
+                `Block ${rowIndex + 1}: ${row
+                  .map((cell) => `${cell.subject} - ${cell.topic}`)
+                  .join(" | ")}`,
+            )
+            .join("\n")
+        : "No previous timetable available.";
+
     const systemPrompt =
       "You are an academic planning assistant. Build a weekly timetable from subjects, student strength scores, and handout content. " +
       "Handouts contain what should be studied in each subject. Scores are from 1 to 5 where 5 means strongest and 1 means weakest. " +
       "Give more time and foundational topics to weaker subjects and advanced revision to stronger subjects. " +
+      "When the user asks to edit or change a timetable, treat the previous timetable as the baseline and modify it instead of creating an unrelated new plan. " +
       'Return strict JSON only with this schema: {"timetable":[[{"subject":"...","topic":"..."}]]}. ' +
       "It must be exactly 4 rows and each row must contain exactly 5 cells. " +
       "Do not output markdown, code fences, explanations, tips, or a daily routine. " +
@@ -515,6 +588,12 @@ export async function POST(req: Request) {
       "",
       "Filename-based topic hints (use these when handout text extraction is empty):",
       filenameHintContext,
+      "",
+      "Previous timetable baseline (preserve this unless user asks for major changes):",
+      previousTimetableContext,
+      "",
+      "Recent conversation context:",
+      conversationContext,
       "",
       typeof body.prompt === "string" && body.prompt.trim()
         ? `Additional user request: ${body.prompt.trim()}`
@@ -629,6 +708,17 @@ export async function POST(req: Request) {
     });
 
     if (!jsonText) {
+      if (previousTimetableNormalized) {
+        logDebug(debugEnabled, "timetable.fallback.previous", {
+          reason: "Model did not return JSON object.",
+        });
+
+        return NextResponse.json({
+          timetable: previousTimetableNormalized.timetable,
+          fallbackUsed: true,
+        });
+      }
+
       return NextResponse.json(
         { error: "Model did not return valid JSON for timetable." },
         { status: 502 },
@@ -640,6 +730,17 @@ export async function POST(req: Request) {
     try {
       parsedOutput = JSON.parse(jsonText);
     } catch {
+      if (previousTimetableNormalized) {
+        logDebug(debugEnabled, "timetable.fallback.previous", {
+          reason: "Model JSON parse failed.",
+        });
+
+        return NextResponse.json({
+          timetable: previousTimetableNormalized.timetable,
+          fallbackUsed: true,
+        });
+      }
+
       return NextResponse.json(
         { error: "Could not parse model JSON timetable output." },
         { status: 502 },
@@ -655,6 +756,17 @@ export async function POST(req: Request) {
     });
 
     if (!normalized) {
+      if (previousTimetableNormalized) {
+        logDebug(debugEnabled, "timetable.fallback.previous", {
+          reason: "Normalized timetable invalid.",
+        });
+
+        return NextResponse.json({
+          timetable: previousTimetableNormalized.timetable,
+          fallbackUsed: true,
+        });
+      }
+
       return NextResponse.json(
         { error: "Model output format is invalid for timetable schema." },
         { status: 502 },

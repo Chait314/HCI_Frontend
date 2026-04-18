@@ -366,6 +366,11 @@ const getHandout = (subjectId: number) => {
     topic: string;
   };
 
+  type ConversationTurn = {
+    role: 'user' | 'assistant';
+    content: string;
+  };
+
   interface Chats {
     chat_id : string;
     chat_name: string;
@@ -404,6 +409,36 @@ const getHandout = (subjectId: number) => {
   const handleSend = async(e: React.MouseEvent<HTMLButtonElement>) => {
     if (!input.trim() || !currentChatId) return;
 
+    const latestTimetableFromChat = [...(currentChat?.messages || [])]
+      .reverse()
+      .find((message) => message.type === 'timetable' && message.timetable)?.timetable;
+
+    const conversationForApi: ConversationTurn[] = (currentChat?.messages || [])
+      .slice(-10)
+      .map((message) => {
+        const role: 'user' | 'assistant' = message.role === 'ai' ? 'assistant' : 'user';
+
+        if (message.type === 'timetable' && message.timetable) {
+          const timetableText = message.timetable
+            .map((row, rowIndex) =>
+              `Block ${rowIndex + 1}: ${row
+                .map((cell) => `${cell.subject} - ${cell.topic}`)
+                .join(' | ')}`
+            )
+            .join('\n');
+
+          return {
+            role,
+            content: `${message.message}\n${timetableText}`,
+          };
+        }
+
+        return {
+          role,
+          content: message.message,
+        };
+      });
+
     setSendTex(input);
     
 
@@ -438,6 +473,11 @@ const getHandout = (subjectId: number) => {
           score: subject.strength === null ? null : subject.strength + 1,
         })),
         handouts,
+        conversation: conversationForApi,
+        previousTimetable: latestTimetableFromChat ||
+          timetable.map((row) =>
+            row.map((cell) => ({ subject: cell.subject, topic: cell.topic }))
+          ),
       })
     });
 
@@ -673,6 +713,9 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
           score: subject.strength === null ? null : subject.strength + 1,
         })),
         handouts,
+        previousTimetable: timetable.map((row) =>
+          row.map((cell) => ({ subject: cell.subject, topic: cell.topic }))
+        ),
         ...(userSuggestion && userSuggestion.trim()
           ? { prompt: userSuggestion.trim() }
           : {}),
