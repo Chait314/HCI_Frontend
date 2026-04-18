@@ -20,6 +20,7 @@ type StudyPreferencesInput = {
   workingDays: string[];
   workingHoursByDay: Record<string, { start: string; end: string }>;
   slotDurationMinutes: number;
+  maxTopicsPerSlot: number;
 };
 
 type TimetableRequestBody = {
@@ -347,6 +348,19 @@ function formatMinutesTo12Hour(totalMinutes: number): string {
   return `${hours12}:${minutes.toString().padStart(2, "0")} ${suffix}`;
 }
 
+function limitTopicCount(topic: string, maxTopicsPerSlot: number): string {
+  const normalized = topic.replace(/\s+/g, " ").trim();
+  if (!normalized) return normalized;
+
+  const parts = normalized
+    .split(/\s*(?:\n+|;|\||,)\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length <= maxTopicsPerSlot) return normalized;
+  return parts.slice(0, maxTopicsPerSlot).join(", ");
+}
+
 function buildDaySlotStarts(
   day: string,
   studyPreferences: StudyPreferencesInput,
@@ -538,6 +552,11 @@ export async function POST(req: Request) {
         body.studyPreferences.slotDurationMinutes >= 15
           ? Math.floor(body.studyPreferences.slotDurationMinutes)
           : 60,
+      maxTopicsPerSlot:
+        typeof body?.studyPreferences?.maxTopicsPerSlot === "number" &&
+        body.studyPreferences.maxTopicsPerSlot >= 1
+          ? Math.floor(body.studyPreferences.maxTopicsPerSlot)
+          : 3,
     };
 
     if (studyPreferences.workingDays.length === 0) {
@@ -725,10 +744,12 @@ export async function POST(req: Request) {
       "Working hours per selected day:",
       dayScheduleContext,
       `Preferred slot duration (minutes): ${studyPreferences.slotDurationMinutes}`,
+      `Maximum topics allowed in one slot: ${studyPreferences.maxTopicsPerSlot}`,
       `Expected timetable shape: ${expectedRows} rows x ${expectedCols} columns in this day order: ${orderedWorkingDays.join(", ")}.`,
       "Row-to-time mapping (use this exact row order):",
       rowTimesContext,
       "Use these preferences to shape workload intensity and topic depth across timetable blocks.",
+      "Do not include more than the allowed maximum number of topics in any single slot topic text.",
       "Do not schedule study entries beyond the user's end time for any day.",
       'If a day does not have availability for a row time, return {"subject":"No Slot","topic":"Outside working hours"} for that cell.',
     ].join("\n");
@@ -976,7 +997,10 @@ export async function POST(req: Request) {
           };
         }
 
-        return cell;
+        return {
+          subject: cell.subject,
+          topic: limitTopicCount(cell.topic, studyPreferences.maxTopicsPerSlot),
+        };
       }),
     );
 

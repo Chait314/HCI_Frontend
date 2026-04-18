@@ -14,6 +14,7 @@ type StudyPreferences = {
   workingDays: string[];
   workingHoursByDay: Record<string, { start: string; end: string }>;
   slotDurationMinutes: number;
+  maxTopicsPerSlot: number;
 };
 
 const WEEK_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -92,6 +93,7 @@ useEffect(() => {
       Fri: { ...DEFAULT_DAY_RANGE },
     },
     slotDurationMinutes: 60,
+    maxTopicsPerSlot: 3,
   });
 
   useEffect(() => {
@@ -169,10 +171,16 @@ useEffect(() => {
           ? Math.floor(parsed.slotDurationMinutes)
           : 60;
 
+      const normalizedMaxTopics =
+        typeof parsed?.maxTopicsPerSlot === 'number' && parsed.maxTopicsPerSlot >= 1
+          ? Math.floor(parsed.maxTopicsPerSlot)
+          : 3;
+
       setStudyPreferences({
         workingDays: normalizedDays.length > 0 ? normalizedDays : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
         workingHoursByDay: normalizedHoursByDay,
         slotDurationMinutes: normalizedSlotDuration,
+        maxTopicsPerSlot: normalizedMaxTopics,
       });
     } catch (error) {
       console.error('Failed to parse studyPreferences from localStorage:', error);
@@ -368,6 +376,23 @@ useEffect(() => {
                   setStudyPreferences((prev) => ({
                     ...prev,
                     slotDurationMinutes: Number(e.target.value) || 15,
+                  }))
+                }
+                className="mt-1 border p-2 rounded text-black"
+              />
+            </label>
+
+            <label className="flex flex-col text-sm text-gray-700">
+              Max Topics Per Slot
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={studyPreferences.maxTopicsPerSlot}
+                onChange={(e) =>
+                  setStudyPreferences((prev) => ({
+                    ...prev,
+                    maxTopicsPerSlot: Number(e.target.value) || 1,
                   }))
                 }
                 className="mt-1 border p-2 rounded text-black"
