@@ -1,6 +1,6 @@
-import { NextResponse } from "next/server";
 import { XMLParser } from "fast-xml-parser";
 import JSZip from "jszip";
+import { NextResponse } from "next/server";
 import PDFParser from "pdf2json";
 
 type SubjectInput = {
@@ -738,6 +738,10 @@ export async function POST(req: Request) {
           )}`,
       )
       .join("\n");
+
+
+   type TopicItem = { subject: string; topic: string };
+
 
     const studyPreferencesContext = [
       `Working days selected by user (Sun to Sat options): ${studyPreferences.workingDays.join(", ")}`,
