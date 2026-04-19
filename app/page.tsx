@@ -305,6 +305,35 @@ useEffect(() => {
         </div>
         
       </div>
+      {isAdding && (
+        <div className="mt-4 flex space-x-2">
+          <input
+            type="text"
+            value={newSubjectName}
+            onChange={(e) => setNewSubjectName(e.target.value)}
+            placeholder="Enter subject name"
+            className="border p-2 rounded w-full text-black"
+          />
+          <button
+            onClick={() => {
+              if (newSubjectName.trim() === '') return;
+
+              const newSubject = {
+                id: subjects.length + 1,
+                name: newSubjectName,
+                strength: null
+              };
+
+              setSubjects([...subjects, newSubject]);
+              setNewSubjectName('');
+              setIsAdding(false);
+            }}
+            className="bg-blue-500 text-white px-4 rounded hover:cursor-pointer hover:bg-blue-700 active:bg-gray-600"
+          >
+            Add
+          </button>
+        </div>
+      )}
 
       <div className="mt-8">
         <div className="mb-8 p-4 bg-gray-50 rounded border">
@@ -399,35 +428,7 @@ useEffect(() => {
         </div>
 
         <h3 className="text-lg text-gray-600 border-b pb-2 mb-4">Current Courses:</h3>
-        {isAdding && (
-        <div className="mt-4 flex space-x-2">
-          <input
-            type="text"
-            value={newSubjectName}
-            onChange={(e) => setNewSubjectName(e.target.value)}
-            placeholder="Enter subject name"
-            className="border p-2 rounded w-full text-black"
-          />
-          <button
-            onClick={() => {
-              if (newSubjectName.trim() === '') return;
-
-              const newSubject = {
-                id: subjects.length + 1,
-                name: newSubjectName,
-                strength: null
-              };
-
-              setSubjects([...subjects, newSubject]);
-              setNewSubjectName('');
-              setIsAdding(false);
-            }}
-            className="bg-blue-500 text-white px-4 rounded hover:cursor-pointer hover:bg-blue-700 active:bg-gray-600"
-          >
-            Add
-          </button>
-        </div>
-      )}
+        
         {subjects.map((subject, index) => (
           <div key={subject.id} className="mb-6 p-4 bg-gray-50 rounded">
             <p className="font-medium text-gray-700 mb-3">{index + 1}. {subject.name}</p>
