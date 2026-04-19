@@ -642,6 +642,7 @@ const getHandout = (subjectId: number) => {
     signature: string;
     timetable: ChatTimetableCell[][];
     viewConfig: TimetableViewConfig;
+    finished: boolean;
   };
 
   type ConversationTurn = {
@@ -808,6 +809,7 @@ const getHandout = (subjectId: number) => {
                 : getTimetableSignature(rows, viewConfig),
             timetable: rows,
             viewConfig,
+            finished: false
           };
         })
         .filter((item) => item.signature && Array.isArray(item.timetable));
@@ -839,6 +841,7 @@ const getHandout = (subjectId: number) => {
       signature,
       timetable: timetableRows,
       viewConfig,
+      finished: false
     };
 
     setSavedTimetables((prev) => [record, ...prev]);
@@ -1238,8 +1241,8 @@ const getHandout = (subjectId: number) => {
     const rows = Math.max(1, maxTimeSlots);
 
     if (subjects.length === 0) {
-      return Array.from({ length: rows }, () =>
-        Array.from({ length: columns }, () => ({
+      return Array.from({ length: rows }, (_, rowIndex) =>
+        Array.from({ length: columns }, (_, colIndex) => ({
           subject: 'General Study',
           topic: 'Revision',
           completed: false,
@@ -1247,15 +1250,15 @@ const getHandout = (subjectId: number) => {
       );
     }
 
-    return Array.from({ length: rows }, () =>
-      Array.from({ length: columns }, (_, colIndex) => {
-        const sub = subjects[colIndex % subjects.length];
-        return {
-          subject: sub.name,
-          topic: 'Revision',
-          completed: false,
-        };
-      })
+    return Array.from({ length: rows }, (_, rowIndex) =>
+        Array.from({ length: columns }, (_, colIndex) => {
+          const sub = subjects[colIndex % subjects.length];
+          return {
+            subject: sub.name,
+            topic: 'Revision',
+            completed: false,
+          };
+        })
     );
   };
     
@@ -1342,16 +1345,19 @@ const handleRegenerateWithSuggestion = async () => {
 };
 
   const toggleCell = (rowIndex: number, colIndex: number) => {
-    setTimetable(prev =>
-      prev.map((row, i) =>
-        row.map((cell, j) => {
-          if (i === rowIndex && j === colIndex) {
-            return { ...cell, completed: !cell.completed };
-          }
-          return cell;
-        })
+    setTimetable(prev => {
+    const updated = prev.map((row, i) =>
+      row.map((cell, j) =>
+        i === rowIndex && j === colIndex
+          ? { ...cell, completed: !cell.completed }
+          : cell
       )
     );
+
+    localStorage.setItem("timetable", JSON.stringify(updated));
+
+    return updated;
+  });
 };
 
 const isPdfHandout = (handout: Handout) => {
@@ -1404,6 +1410,7 @@ const openHandout = (handout: Handout) => {
 
       </div>
     ))}
+
   </div>
 
   <div className='text-black max-w-xl mx-auto mt-6 p-5 bg-white border rounded-xl shadow'>
@@ -1452,6 +1459,29 @@ const openHandout = (handout: Handout) => {
   );
 })}
   </div>
+  <h2 className='p-3 font-bold'>Subjects and Topics Completed:</h2>
+  <div className="flex items-center pt-3 space-x-2 space-y-4">
+    
+  {timetable.map((row, rowIndex) => (
+    <div key={rowIndex} className="flex gap-3 flex-wrap">
+      {row.map((cell, colIndex) => (
+        cell.completed && (
+          <div
+            key={colIndex}
+            className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 shadow-sm min-w-[120px]"
+          >
+            <p className="text-sm font-semibold text-green-800 truncate">
+              {cell.subject}
+            </p>
+            <p className="text-xs text-green-600 truncate">
+              {cell.topic}
+            </p>
+          </div>
+        )
+      ))}
+    </div>
+  ))}
+</div>
 </div>
   )
 
@@ -1535,7 +1565,7 @@ const openHandout = (handout: Handout) => {
         return (
         <td key={j} className="p-3 border-r">
           <div
-            onClick={() => toggleCell(i, j)}
+            onClick={() => toggleCell(i, j, )}
             className={`w-full min-h-20 rounded text-xs p-2 cursor-pointer transition ${
               cell.completed
                 ? 'bg-green-200'
@@ -1577,6 +1607,13 @@ const openHandout = (handout: Handout) => {
 
   setEditingId(null);
 };
+
+useEffect(()=> {
+  localStorage.setItem(
+    "Timetable",
+    JSON.stringify(timetable)
+  );
+},[timetable]);
 
   return (
     <div className="min-h-screen bg-gray-100 font-sans">
