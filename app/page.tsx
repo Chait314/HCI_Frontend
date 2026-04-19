@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from 'react';
-import { mainBackUrl } from './Urls';
 
 type Step = 'subjects' | 'uploads' | 'chat' | 'timetable' | 'dashboard' | 'custom' | 'data'
 
@@ -10,6 +9,61 @@ interface Subject {
   name: string;
   strength: number | null;
 }
+
+type StudyPreferences = {
+  workingDays: string[];
+  workingHoursByDay: Record<string, { start: string; end: string }>;
+  slotDurationMinutes: number;
+  maxTopicsPerSlot: number;
+};
+
+const WEEK_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DEFAULT_DAY_RANGE = { start: '08:00', end: '12:00' };
+
+const parseTimeToMinutes = (value: string) => {
+  const match = value.match(/^(\d{2}):(\d{2})$/);
+  if (!match) return null;
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+
+  return hours * 60 + minutes;
+};
+
+const formatMinutesTo12Hour = (totalMinutes: number) => {
+  const bounded = Math.max(0, Math.min(totalMinutes, 24 * 60 - 1));
+  const hours24 = Math.floor(bounded / 60);
+  const minutes = bounded % 60;
+  const suffix = hours24 >= 12 ? 'pm' : 'am';
+  const hours12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
+  return `${hours12}:${minutes.toString().padStart(2, '0')} ${suffix}`;
+};
+
+const getSlotStartsForDay = (
+  day: string,
+  preferences: StudyPreferences,
+) => {
+  const range = preferences.workingHoursByDay[day] || DEFAULT_DAY_RANGE;
+  const start = parseTimeToMinutes(range.start);
+  const end = parseTimeToMinutes(range.end);
+  const slotDuration = Math.max(15, preferences.slotDurationMinutes || 60);
+
+  if (start === null || end === null || end <= start) return [];
+
+  const slotCount = Math.floor((end - start) / slotDuration);
+  if (slotCount <= 0) return [];
+
+  return Array.from({ length: slotCount }, (_, index) => start + index * slotDuration);
+};
+
+const formatTimeRangeFromStart = (start: number, slotDurationMinutes: number) => {
+  const safeDuration = Math.max(15, slotDurationMinutes || 60);
+  const slotEnd = start + safeDuration;
+  return `${formatMinutesTo12Hour(start)} - ${formatMinutesTo12Hour(slotEnd)}`;
+};
 
 export default function StudyPlannerApp() {
   const [currentStep, setCurrentStep] = useState<Step>('subjects');
@@ -25,10 +79,19 @@ useEffect(() => {
   
   // Pre-populated subjects based on typical academic schedules
   const [subjects, setSubjects] = useState<Subject[]>([
-    { id: 1, name: 'Mathematics', strength: null },
-    { id: 2, name: 'Politics', strength: null },
-    { id: 3, name: 'Literature', strength: null },
   ]);
+  const [studyPreferences, setStudyPreferences] = useState<StudyPreferences>({
+    workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+    workingHoursByDay: {
+      Mon: { ...DEFAULT_DAY_RANGE },
+      Tue: { ...DEFAULT_DAY_RANGE },
+      Wed: { ...DEFAULT_DAY_RANGE },
+      Thu: { ...DEFAULT_DAY_RANGE },
+      Fri: { ...DEFAULT_DAY_RANGE },
+    },
+    slotDurationMinutes: 60,
+    maxTopicsPerSlot: 3,
+  });
 
   useEffect(() => {
     const savedSubjects = localStorage.getItem('subjects');
@@ -61,6 +124,111 @@ useEffect(() => {
   useEffect(() => {
     localStorage.setItem('subjects', JSON.stringify(subjects));
   }, [subjects]);
+
+  useEffect(() => {
+    const savedStudyPreferences = localStorage.getItem('studyPreferences');
+    if (!savedStudyPreferences) return;
+
+    try {
+      const parsed = JSON.parse(savedStudyPreferences);
+
+      const normalizedDays = Array.isArray(parsed?.workingDays)
+        ? parsed.workingDays.filter(
+            (day: unknown): day is string =>
+              typeof day === 'string' && WEEK_DAYS.includes(day),
+          )
+        : [];
+
+      const parsedHoursByDay =
+        parsed?.workingHoursByDay && typeof parsed.workingHoursByDay === 'object'
+          ? parsed.workingHoursByDay
+          : {};
+
+      const normalizedHoursByDay = WEEK_DAYS.reduce<Record<string, { start: string; end: string }>>(
+        (acc, day) => {
+          const entry = (parsedHoursByDay as Record<string, unknown>)[day] as
+            | { start?: unknown; end?: unknown }
+            | undefined;
+
+          const start = typeof entry?.start === 'string' ? entry.start : DEFAULT_DAY_RANGE.start;
+          const end = typeof entry?.end === 'string' ? entry.end : DEFAULT_DAY_RANGE.end;
+
+          acc[day] = {
+            start,
+            end,
+          };
+
+          return acc;
+        },
+        {},
+      );
+
+      const normalizedSlotDuration =
+        typeof parsed?.slotDurationMinutes === 'number' && parsed.slotDurationMinutes >= 15
+          ? Math.floor(parsed.slotDurationMinutes)
+          : 60;
+
+      const normalizedMaxTopics =
+        typeof parsed?.maxTopicsPerSlot === 'number' && parsed.maxTopicsPerSlot >= 1
+          ? Math.floor(parsed.maxTopicsPerSlot)
+          : 3;
+
+      setStudyPreferences({
+        workingDays: normalizedDays.length > 0 ? normalizedDays : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+        workingHoursByDay: normalizedHoursByDay,
+        slotDurationMinutes: normalizedSlotDuration,
+        maxTopicsPerSlot: normalizedMaxTopics,
+      });
+    } catch (error) {
+      console.error('Failed to parse studyPreferences from localStorage:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('studyPreferences', JSON.stringify(studyPreferences));
+  }, [studyPreferences]);
+
+  const toggleWorkingDay = (day: string) => {
+    setStudyPreferences((prev) => {
+      const isSelected = prev.workingDays.includes(day);
+
+      if (isSelected) {
+        // Keep at least one working day selected.
+        if (prev.workingDays.length === 1) return prev;
+
+        return {
+          ...prev,
+          workingDays: prev.workingDays.filter((item) => item !== day),
+        };
+      }
+
+      return {
+        ...prev,
+        workingDays: [...prev.workingDays, day],
+        workingHoursByDay: {
+          ...prev.workingHoursByDay,
+          [day]: prev.workingHoursByDay[day] || { ...DEFAULT_DAY_RANGE },
+        },
+      };
+    });
+  };
+
+  const updateWorkingHoursByDay = (
+    day: string,
+    field: 'start' | 'end',
+    value: string,
+  ) => {
+    setStudyPreferences((prev) => ({
+      ...prev,
+      workingHoursByDay: {
+        ...prev.workingHoursByDay,
+        [day]: {
+          ...(prev.workingHoursByDay[day] || { ...DEFAULT_DAY_RANGE }),
+          [field]: value,
+        },
+      },
+    }));
+  };
 
   const [newSubjectName, setNewSubjectName] = useState('');
   const [isAdding, setIsAdding] = useState(false);
@@ -137,10 +305,7 @@ useEffect(() => {
         </div>
         
       </div>
-
-      <div className="mt-8">
-        <h3 className="text-lg text-gray-600 border-b pb-2 mb-4">Current Courses:</h3>
-        {isAdding && (
+      {isAdding && (
         <div className="mt-4 flex space-x-2">
           <input
             type="text"
@@ -169,6 +334,101 @@ useEffect(() => {
           </button>
         </div>
       )}
+
+      <div className="mt-8">
+        <div className="mb-8 p-4 bg-gray-50 rounded border">
+          <h3 className="text-lg text-gray-700 mb-3">Study Availability</h3>
+
+          <p className="text-sm text-gray-600 mb-2">Choose working days (Sun to Sat):</p>
+          <div className="flex flex-wrap gap-2 mb-4">
+            {WEEK_DAYS.map((day) => {
+              const selected = studyPreferences.workingDays.includes(day);
+
+              return (
+                <button
+                  key={day}
+                  type="button"
+                  onClick={() => toggleWorkingDay(day)}
+                  className={`px-3 py-1 rounded text-sm border ${
+                    selected
+                      ? 'bg-green-600 text-white border-green-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'
+                  }`}
+                >
+                  {day}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="space-y-3 mb-4">
+            <p className="text-sm text-gray-600">Set working time for each selected day:</p>
+            <div className="space-y-2">
+              {WEEK_DAYS.filter((day) => studyPreferences.workingDays.includes(day)).map((day) => (
+                <div key={day} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                  <span className="text-sm font-medium text-gray-700">{day}</span>
+                  <label className="flex flex-col text-sm text-gray-700">
+                    Start
+                    <input
+                      type="time"
+                      value={studyPreferences.workingHoursByDay[day]?.start || DEFAULT_DAY_RANGE.start}
+                      onChange={(e) => updateWorkingHoursByDay(day, 'start', e.target.value)}
+                      className="mt-1 border p-2 rounded text-black"
+                    />
+                  </label>
+                  <label className="flex flex-col text-sm text-gray-700">
+                    End
+                    <input
+                      type="time"
+                      value={studyPreferences.workingHoursByDay[day]?.end || DEFAULT_DAY_RANGE.end}
+                      onChange={(e) => updateWorkingHoursByDay(day, 'end', e.target.value)}
+                      className="mt-1 border p-2 rounded text-black"
+                    />
+                  </label>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <label className="flex flex-col text-sm text-gray-700">
+              Slot Duration (minutes)
+              <input
+                type="number"
+                min={15}
+                step={15}
+                value={studyPreferences.slotDurationMinutes}
+                onChange={(e) =>
+                  setStudyPreferences((prev) => ({
+                    ...prev,
+                    slotDurationMinutes: Number(e.target.value) || 15,
+                  }))
+                }
+                className="mt-1 border p-2 rounded text-black"
+              />
+            </label>
+
+            <label className="flex flex-col text-sm text-gray-700">
+              Max Topics Per Slot
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={studyPreferences.maxTopicsPerSlot}
+                onChange={(e) =>
+                  setStudyPreferences((prev) => ({
+                    ...prev,
+                    maxTopicsPerSlot: Number(e.target.value) || 1,
+                  }))
+                }
+                className="mt-1 border p-2 rounded text-black"
+              />
+            </label>
+          </div>
+        </div>
+
+        <h3 className="text-lg text-gray-600 border-b pb-2 mb-4">Current Courses:</h3>
+        
         {subjects.map((subject, index) => (
           <div key={subject.id} className="mb-6 p-4 bg-gray-50 rounded">
             <p className="font-medium text-gray-700 mb-3">{index + 1}. {subject.name}</p>
@@ -362,22 +622,285 @@ const getHandout = (subjectId: number) => {
   );
 
 
+  type ChatTimetableCell = {
+    subject: string;
+    topic: string;
+  };
+
+  type TimetableViewConfig = {
+    days: string[];
+    rowSlotStarts: number[];
+    slotDurationMinutes: number;
+    daySlotStarts: Record<string, number[]>;
+  };
+
+  type SavedTimetable = {
+    name: string;
+    id: string;
+    source: 'chat' | 'timetable-screen';
+    createdAt: string;
+    signature: string;
+    timetable: ChatTimetableCell[][];
+    viewConfig: TimetableViewConfig;
+  };
+
+  type ConversationTurn = {
+    role: 'user' | 'assistant';
+    content: string;
+  };
+
   interface Chats {
     chat_id : string;
     chat_name: string;
     messages: {
+      id: string;
       role: 'user' | 'ai';
       message: string;
-      type?: 'text' | 'timetable'
+      type?: 'text' | 'timetable';
+      timetable?: ChatTimetableCell[][];
+      accepted?: boolean;
     }[];
   }
 
   const [chats, setChats] = useState<Chats[]>([]);
+  const [savedTimetables, setSavedTimetables] = useState<SavedTimetable[]>([]);
+  const [isViewingSavedTimetable, setIsViewingSavedTimetable] = useState(false);
+  const [openedSavedViewConfig, setOpenedSavedViewConfig] = useState<TimetableViewConfig | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [sendTex, setSendTex] = useState('');
 
   const [isSending, setIsSending] = useState(false);
+  const orderedWorkingDays = WEEK_DAYS.filter((day) => studyPreferences.workingDays.includes(day));
+  const daySlotStarts = orderedWorkingDays.reduce<Record<string, number[]>>((acc, day) => {
+    acc[day] = getSlotStartsForDay(day, studyPreferences);
+    return acc;
+  }, {});
+  const allSlotStarts = Array.from(
+    new Set(orderedWorkingDays.flatMap((day) => daySlotStarts[day] || [])),
+  ).sort((a, b) => a - b);
+  const fallbackStart = parseTimeToMinutes(DEFAULT_DAY_RANGE.start) ?? 8 * 60;
+  const rowSlotStarts = allSlotStarts.length > 0 ? allSlotStarts : [fallbackStart];
+  const timeRowLabels = rowSlotStarts.map((start) =>
+    formatTimeRangeFromStart(start, studyPreferences.slotDurationMinutes),
+  );
+  const maxTimeSlots = rowSlotStarts.length;
+
+  const currentViewConfig: TimetableViewConfig = {
+    days: [...orderedWorkingDays],
+    rowSlotStarts: [...rowSlotStarts],
+    slotDurationMinutes: studyPreferences.slotDurationMinutes,
+    daySlotStarts: Object.fromEntries(
+      orderedWorkingDays.map((day) => [day, [...(daySlotStarts[day] || [])]]),
+    ),
+  };
+
+  const defaultViewConfigFromShape = (
+    timetableRows: ChatTimetableCell[][],
+  ): TimetableViewConfig => {
+    const fallbackStart = parseTimeToMinutes(DEFAULT_DAY_RANGE.start) ?? 8 * 60;
+    const rows = Math.max(1, timetableRows.length || 1);
+    const cols = Math.max(1, timetableRows[0]?.length || 1);
+    const days = WEEK_DAYS.slice(0, cols);
+    const slotDurationMinutes = 60;
+    const rowStarts = Array.from({ length: rows }, (_, index) => fallbackStart + index * slotDurationMinutes);
+
+    return {
+      days,
+      rowSlotStarts: rowStarts,
+      slotDurationMinutes,
+      daySlotStarts: Object.fromEntries(days.map((day) => [day, [...rowStarts]])),
+    };
+  };
+
+  const normalizeViewConfig = (
+    maybeConfig: unknown,
+    timetableRows: ChatTimetableCell[][],
+  ): TimetableViewConfig => {
+    const fallback = defaultViewConfigFromShape(timetableRows);
+    if (!maybeConfig || typeof maybeConfig !== 'object') return fallback;
+
+    const record = maybeConfig as {
+      days?: unknown;
+      rowSlotStarts?: unknown;
+      slotDurationMinutes?: unknown;
+      daySlotStarts?: unknown;
+    };
+
+    const days = Array.isArray(record.days)
+      ? record.days.filter((day): day is string => typeof day === 'string' && WEEK_DAYS.includes(day))
+      : [];
+
+    const rowSlotStarts = Array.isArray(record.rowSlotStarts)
+      ? record.rowSlotStarts.filter((value): value is number => typeof value === 'number')
+      : [];
+
+    const slotDurationMinutes =
+      typeof record.slotDurationMinutes === 'number' && record.slotDurationMinutes >= 15
+        ? record.slotDurationMinutes
+        : fallback.slotDurationMinutes;
+
+    const parsedDaySlotStarts =
+      record.daySlotStarts && typeof record.daySlotStarts === 'object'
+        ? (record.daySlotStarts as Record<string, unknown>)
+        : {};
+
+    const safeDays = days.length > 0 ? days : fallback.days;
+    const safeRowStarts = rowSlotStarts.length > 0 ? rowSlotStarts : fallback.rowSlotStarts;
+
+    const daySlotStartsNormalized: Record<string, number[]> = Object.fromEntries(
+      safeDays.map((day) => {
+        const dayValues = parsedDaySlotStarts[day];
+        const normalized = Array.isArray(dayValues)
+          ? dayValues.filter((value): value is number => typeof value === 'number')
+          : [];
+
+        return [day, normalized.length > 0 ? normalized : [...safeRowStarts]];
+      }),
+    );
+
+    return {
+      days: safeDays,
+      rowSlotStarts: safeRowStarts,
+      slotDurationMinutes,
+      daySlotStarts: daySlotStartsNormalized,
+    };
+  };
+
+  const toChatTimetableCells = (rows: Cell[][]): ChatTimetableCell[][] =>
+    rows.map((row) => row.map((cell) => ({ subject: cell.subject, topic: cell.topic })));
+
+  const getTimetableSignature = (
+    rows: ChatTimetableCell[][],
+    viewConfig: TimetableViewConfig,
+  ) =>
+    JSON.stringify({
+      timetable: rows.map((row) => row.map((cell) => ({ subject: cell.subject, topic: cell.topic }))),
+      viewConfig: {
+        days: viewConfig.days,
+        rowSlotStarts: viewConfig.rowSlotStarts,
+        slotDurationMinutes: viewConfig.slotDurationMinutes,
+        daySlotStarts: viewConfig.daySlotStarts,
+      },
+    });
+
+  useEffect(() => {
+    const saved = localStorage.getItem('acceptedTimetables');
+    if (!saved) return;
+
+    try {
+      const parsed = JSON.parse(saved);
+      if (!Array.isArray(parsed)) return;
+
+      const normalized: SavedTimetable[] = parsed
+        .map((item) => {
+          const rows = Array.isArray(item?.timetable) ? item.timetable : [];
+          const viewConfig = normalizeViewConfig(item?.viewConfig, rows);
+
+          return {
+            name: typeof item?.name === 'string' ? item.name : 'new_tt',
+            id: typeof item?.id === 'string' ? item.id : `${Date.now()}-${Math.random()}`,
+            source: (item?.source === 'chat' ? 'chat' : 'timetable-screen') as SavedTimetable['source'],
+            createdAt: typeof item?.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
+            signature:
+              typeof item?.signature === 'string' && item.signature
+                ? item.signature
+                : getTimetableSignature(rows, viewConfig),
+            timetable: rows,
+            viewConfig,
+          };
+        })
+        .filter((item) => item.signature && Array.isArray(item.timetable));
+
+      setSavedTimetables(normalized);
+    } catch (error) {
+      console.error('Failed to parse accepted timetables:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('acceptedTimetables', JSON.stringify(savedTimetables));
+  }, [savedTimetables]);
+
+  const saveAcceptedTimetable = (
+    timetableRows: ChatTimetableCell[][],
+    source: SavedTimetable['source'],
+    viewConfig: TimetableViewConfig,
+  ) => {
+    const signature = getTimetableSignature(timetableRows, viewConfig);
+    const alreadyExists = savedTimetables.some((item) => item.signature === signature);
+    if (alreadyExists) return false;
+
+    const record: SavedTimetable = {
+      name: `new_tt_${savedTimetables.length + 1}`,
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      source,
+      createdAt: new Date().toISOString(),
+      signature,
+      timetable: timetableRows,
+      viewConfig,
+    };
+
+    setSavedTimetables((prev) => [record, ...prev]);
+    return true;
+  };
+
+  const handleAcceptChatTimetable = (
+    chatId: string,
+    messageId: string,
+    timetableRows: ChatTimetableCell[][],
+  ) => {
+    saveAcceptedTimetable(timetableRows, 'chat', currentViewConfig);
+
+    setChats((prevChats) =>
+      prevChats.map((chat) =>
+        chat.chat_id === chatId
+          ? {
+              ...chat,
+              messages: chat.messages.map((message) =>
+                message.id === messageId
+                  ? { ...message, accepted: true }
+                  : message,
+              ),
+            }
+          : chat,
+      ),
+    );
+  };
+
+  const isCurrentTimetableAccepted = () => {
+    const activeViewConfig = isViewingSavedTimetable && openedSavedViewConfig
+      ? openedSavedViewConfig
+      : currentViewConfig;
+    const signature = getTimetableSignature(toChatTimetableCells(timetable), activeViewConfig);
+    return savedTimetables.some((item) => item.signature === signature);
+  };
+
+  const handleAcceptTimetableScreen = () => {
+    const activeViewConfig = isViewingSavedTimetable && openedSavedViewConfig
+      ? openedSavedViewConfig
+      : currentViewConfig;
+    saveAcceptedTimetable(toChatTimetableCells(timetable), 'timetable-screen', activeViewConfig);
+  };
+
+  const openSavedTimetable = (saved: SavedTimetable) => {
+    const reopened = saved.timetable.map((row) =>
+      row.map((cell) => ({
+        subject: cell.subject,
+        topic: cell.topic,
+        completed: false,
+      })),
+    );
+
+    setTimetable(reopened);
+    setIsViewingSavedTimetable(true);
+    setOpenedSavedViewConfig(saved.viewConfig);
+    setCurrentStep('timetable');
+  };
+
+  const deleteSavedTimetable = (savedId: string) => {
+    setSavedTimetables((prev) => prev.filter((item) => item.id !== savedId));
+  };
 
   const createNewChat = () => {
     const newChat: Chats = {
@@ -399,6 +922,36 @@ const getHandout = (subjectId: number) => {
   const handleSend = async(e: React.MouseEvent<HTMLButtonElement>) => {
     if (!input.trim() || !currentChatId) return;
 
+    const latestTimetableFromChat = [...(currentChat?.messages || [])]
+      .reverse()
+      .find((message) => message.type === 'timetable' && message.timetable)?.timetable;
+
+    const conversationForApi: ConversationTurn[] = (currentChat?.messages || [])
+      .slice(-10)
+      .map((message) => {
+        const role: 'user' | 'assistant' = message.role === 'ai' ? 'assistant' : 'user';
+
+        if (message.type === 'timetable' && message.timetable) {
+          const timetableText = message.timetable
+            .map((row, rowIndex) =>
+              `Block ${rowIndex + 1}: ${row
+                .map((cell) => `${cell.subject} - ${cell.topic}`)
+                .join(' | ')}`
+            )
+            .join('\n');
+
+          return {
+            role,
+            content: `${message.message}\n${timetableText}`,
+          };
+        }
+
+        return {
+          role,
+          content: message.message,
+        };
+      });
+
     setSendTex(input);
     
 
@@ -409,7 +962,11 @@ const getHandout = (subjectId: number) => {
               ...chat,
               messages: [
                 ...chat.messages,
-                { role: 'user', message: input }
+                {
+                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+                  role: 'user',
+                  message: input,
+                }
               ]
             }
           : chat
@@ -420,19 +977,56 @@ const getHandout = (subjectId: number) => {
     setIsSending(true);
 
     try {
-        const res = await fetch(`${mainBackUrl}/chat`, {
+        const res = await fetch('/api/timetable', {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json' 
       },
-      body: JSON.stringify({ message: input })
+      body: JSON.stringify({
+        prompt: input,
+        subjects: subjects.map((subject) => ({
+          id: subject.id,
+          name: subject.name,
+          score: subject.strength === null ? null : subject.strength + 1,
+        })),
+        studyPreferences,
+        handouts,
+        conversation: conversationForApi,
+        previousTimetable: latestTimetableFromChat ||
+          timetable.map((row) =>
+            row.map((cell) => ({ subject: cell.subject, topic: cell.topic }))
+          ),
+      })
     });
 
-    const text = await res.text();
+    const data = await res.json();
 
-    const data = JSON.parse(text);
+    if (!res.ok) {
+      throw new Error(data?.error || 'Chat request failed');
+    }
 
-    console.log(data);
+    const generatedRows = Array.isArray(data?.timetable) ? data.timetable : [];
+
+    if (
+      generatedRows.length !== maxTimeSlots ||
+      generatedRows.some((row: unknown) => !Array.isArray(row) || row.length !== orderedWorkingDays.length)
+    ) {
+      throw new Error('Timetable format was invalid. Please try again.');
+    }
+
+    const nextTimetable = generatedRows.map((row: Array<{ subject: string; topic: string }>) =>
+      row.map((cell) => ({
+        subject: cell.subject,
+        topic: cell.topic,
+        completed: false,
+      }))
+    );
+
+    setTimetable(nextTimetable);
+
+    const chatTimetable = nextTimetable.map((row: Cell[]) =>
+      row.map((cell: Cell) => ({ subject: cell.subject, topic: cell.topic }))
+    );
 
     // Add bot response
     setChats(prevChats =>
@@ -442,7 +1036,14 @@ const getHandout = (subjectId: number) => {
               ...chat,
               messages: [
                 ...chat.messages,
-                { role: 'ai',type: 'timetable', message: data.reply }
+                {
+                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+                  role: 'ai',
+                  type: 'timetable',
+                  message: 'Here is your generated timetable.',
+                  timetable: chatTimetable,
+                  accepted: false,
+                }
               ]
             }
           : chat
@@ -494,16 +1095,98 @@ const getHandout = (subjectId: number) => {
     className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
   >
     <div
-      className={`p-4 rounded-lg max-w-md shadow-sm ${
+      className={`p-4 rounded-lg shadow-sm ${
+        msg.type === 'timetable' ? 'max-w-4xl w-full' : 'max-w-md'
+      } ${
         msg.role === 'user'
           ? 'bg-gray-100 text-gray-800 rounded-tr-none'
           : 'bg-gray-800 text-white rounded-tl-none'
       }`}
     >
       {msg.role === 'user' && <p>{msg.message}</p>}
-      {/* TEXT MESSAGE */}
-      
-      {msg.type === 'timetable' && <p>{msg.message}</p>}
+
+      {msg.role === 'ai' && msg.type !== 'timetable' && <p>{msg.message}</p>}
+
+      {msg.type === 'timetable' && msg.timetable && (
+        <div className="space-y-3">
+          <p className="text-sm text-gray-100">{msg.message}</p>
+          <div className="border border-gray-600 rounded-lg overflow-x-auto">
+            <table className="w-full text-left border-collapse min-w-[700px]">
+              <thead>
+                <tr className="bg-gray-600 border-b border-gray-500">
+                  <th className="p-3 border-r border-gray-500 font-medium">Time</th>
+                  {orderedWorkingDays.map((day, dayIndex) => (
+                    <th
+                      key={`${msg.id}-${day}`}
+                      className={`p-3 font-medium ${
+                        dayIndex < orderedWorkingDays.length - 1
+                          ? 'border-r border-gray-500'
+                          : ''
+                      }`}
+                    >
+                      {day}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {msg.timetable.map((row, rowIndex) => (
+                  <tr key={rowIndex} className="border-b border-gray-600 last:border-0 text-white">
+                    <td className="p-3 border-r border-gray-600 text-xs text-gray-300 align-top">
+                      {timeRowLabels[rowIndex] || 'No slot'}
+                    </td>
+                    {orderedWorkingDays.map((day, colIndex) => {
+                      const cell = row[colIndex];
+                      const rowStart = rowSlotStarts[rowIndex];
+                      const hasTimeRange = daySlotStarts[day]?.includes(rowStart);
+
+                      if (!cell || !hasTimeRange) {
+                        return (
+                          <td key={`${msg.id}-${day}-${rowIndex}`} className="p-3 border-r border-gray-600 last:border-r-0 align-top">
+                            <div className="w-full rounded text-xs p-2 min-h-20 bg-gray-800 text-gray-400">
+                              No slot
+                            </div>
+                          </td>
+                        );
+                      }
+
+                      return (
+                      <td key={colIndex} className="p-3 border-r border-gray-600 last:border-r-0 align-top">
+                        <div className="w-full rounded text-xs p-2 bg-gray-700 min-h-20">
+                          <p className="font-medium leading-tight whitespace-normal break-words">{cell.subject}</p>
+                          <p className="text-[10px] text-gray-200 leading-tight mt-1 whitespace-normal break-words">{cell.topic}</p>
+                        </div>
+                      </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {(() => {
+            const hasLaterUserMessage = Boolean(
+              currentChat?.messages
+                .slice(index + 1)
+                .some((message) => message.role === 'user'),
+            );
+            const shouldDisableAccept = Boolean(msg.accepted) || hasLaterUserMessage;
+
+            return (
+              <button
+                onClick={() => {
+                  if (!currentChatId || !msg.timetable) return;
+                  handleAcceptChatTimetable(currentChatId, msg.id, msg.timetable);
+                }}
+                disabled={shouldDisableAccept}
+                className="px-3 py-1 text-xs rounded bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
+              >
+                {msg.accepted ? 'Accepted' : hasLaterUserMessage ? 'Accept (expired)' : 'Accept'}
+              </button>
+            );
+          })()}
+        </div>
+      )}
       
     </div>
   </div>
@@ -541,43 +1224,122 @@ const getHandout = (subjectId: number) => {
     </div>
   );
 
-  // Screen 4: Timetable View
-  const subjectTopics = {
-  Mathematics: [
-    'Limits', 'Derivatives', 'Integrals', 'Matrices', 'Probability', 'Vectors'
-  ],
-  Literature: [
-    'Poetry Analysis', 'Shakespeare', 'Essays', 'Prose', 'Drama', 'Literary Devices'
-  ],
-  Politics: [
-    'Constitution', 'Ideologies', 'Elections', 'Public Policy', 'International Relations', 'Governance'
-  ]
-};
-
-const getRandomTopic = (subject: keyof typeof subjectTopics) => {
-  const topics = subjectTopics[subject];
-  return topics[Math.floor(Math.random() * topics.length)];
-};
-const subjos = ['Mathematics', 'Literature', 'Politics'];
-
   type Cell = {
       subject: string;
       topic: string;
       completed: boolean;
   };
+
+  const [isGeneratingTimetable, setIsGeneratingTimetable] = useState(false);
+  const [timetableError, setTimetableError] = useState('');
+
+  const createFallbackTimetable = () => {
+    const columns = Math.max(1, orderedWorkingDays.length);
+    const rows = Math.max(1, maxTimeSlots);
+
+    if (subjects.length === 0) {
+      return Array.from({ length: rows }, () =>
+        Array.from({ length: columns }, () => ({
+          subject: 'General Study',
+          topic: 'Revision',
+          completed: false,
+        }))
+      );
+    }
+
+    return Array.from({ length: rows }, () =>
+      Array.from({ length: columns }, (_, colIndex) => {
+        const sub = subjects[colIndex % subjects.length];
+        return {
+          subject: sub.name,
+          topic: 'Revision',
+          completed: false,
+        };
+      })
+    );
+  };
     
 const [timetable, setTimetable] = useState<Cell[][]>(() => {
-  return Array.from({ length: 4 }, () =>
-    Array.from({ length: 5 }, () => {
-      const subjs = subjects[Math.floor(Math.random() * subjects.length)];
-      return {
-        subject: subjs.name,
-        topic: getRandomTopic(subjs.name as keyof typeof subjectTopics),
-        completed: false
-      };
-    })
-  );
+  return createFallbackTimetable();
 });
+
+const generateTimetableWithAI = async (userSuggestion?: string) => {
+  if (subjects.length === 0) {
+    setTimetableError('Please add at least one subject before generating a timetable.');
+    return;
+  }
+
+  setIsGeneratingTimetable(true);
+  setTimetableError('');
+
+  try {
+    const response = await fetch('/api/timetable', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subjects: subjects.map((subject) => ({
+          id: subject.id,
+          name: subject.name,
+          score: subject.strength === null ? null : subject.strength + 1,
+        })),
+        studyPreferences,
+        handouts,
+        previousTimetable: timetable.map((row) =>
+          row.map((cell) => ({ subject: cell.subject, topic: cell.topic }))
+        ),
+        ...(userSuggestion && userSuggestion.trim()
+          ? { prompt: userSuggestion.trim() }
+          : {}),
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data?.error || 'Failed to generate timetable.');
+    }
+
+    const generatedRows = Array.isArray(data?.timetable) ? data.timetable : [];
+
+    if (
+      generatedRows.length !== maxTimeSlots ||
+      generatedRows.some((row: unknown) => !Array.isArray(row) || row.length !== orderedWorkingDays.length)
+    ) {
+      throw new Error('Timetable format was invalid. Please try again.');
+    }
+
+    setTimetable(
+      generatedRows.map((row: Array<{ subject: string; topic: string }>) =>
+        row.map((cell) => ({
+          subject: cell.subject,
+          topic: cell.topic,
+          completed: false,
+        }))
+      )
+    );
+
+    setIsViewingSavedTimetable(false);
+    setOpenedSavedViewConfig(null);
+    setCurrentStep('timetable');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to generate timetable.';
+    setTimetableError(message);
+  } finally {
+    setIsGeneratingTimetable(false);
+  }
+};
+
+const handleRegenerateWithSuggestion = async () => {
+  const suggestion = window.prompt(
+    'What would you like to change in this timetable? (example: more focus on weak subjects, lighter Friday, exam-priority topics)',
+    '',
+  );
+
+  if (suggestion === null) return;
+  await generateTimetableWithAI(suggestion);
+};
 
   const toggleCell = (rowIndex: number, colIndex: number) => {
     setTimetable(prev =>
@@ -693,22 +1455,57 @@ const openHandout = (handout: Handout) => {
 </div>
   )
 
+  const activeTimetableViewConfig = isViewingSavedTimetable && openedSavedViewConfig
+    ? openedSavedViewConfig
+    : currentViewConfig;
+  const activeTimetableDays = activeTimetableViewConfig.days;
+  const activeTimetableRowStarts = activeTimetableViewConfig.rowSlotStarts;
+  const activeTimetableTimeLabels = activeTimetableRowStarts.map((start) =>
+    formatTimeRangeFromStart(start, activeTimetableViewConfig.slotDurationMinutes),
+  );
+
 
   const renderTimetableView = () => (
     <div className="max-w-4xl mx-auto mt-10 p-6 bg-white border rounded shadow">
-      <h2 className="text-xl font-medium text-gray-800 mb-2">We're glad you liked it!</h2>
+      <div className="flex justify-between items-center mb-2">
+        <h2 className="text-xl font-medium text-gray-800">We're glad you liked it!</h2>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleAcceptTimetableScreen}
+            disabled={isCurrentTimetableAccepted()}
+            className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
+          >
+            {isCurrentTimetableAccepted() ? 'Accepted' : 'Accept'}
+          </button>
+          {!isViewingSavedTimetable && (
+            <button
+              onClick={() => void handleRegenerateWithSuggestion()}
+              disabled={isGeneratingTimetable}
+              className="px-4 py-2 bg-green-700 text-white text-sm rounded hover:bg-green-800 disabled:bg-green-400 disabled:cursor-not-allowed"
+            >
+              {isGeneratingTimetable ? 'Generating...' : 'Regenerate with AI'}
+            </button>
+          )}
+        </div>
+      </div>
       <p className="text-gray-600 mb-6">You can track your progress by marking green when you finished a task, else we'll mark it red.</p>
+      {timetableError && (
+        <p className="text-sm text-red-600 mb-4">{timetableError}</p>
+      )}
       
       <div className="border rounded-lg overflow-hidden">
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-gray-500 border-b">
                 <th className="p-3 border-r font-medium">Time</th>
-                <th className="p-3 border-r font-medium">Mon</th>
-                <th className="p-3 border-r font-medium">Tue</th>
-                <th className="p-3 border-r font-medium">Wed</th>
-                <th className="p-3 border-r font-medium">Thu</th>
-                <th className="p-3 font-medium">Fri</th>
+                {activeTimetableDays.map((day, dayIndex) => (
+                  <th
+                    key={`timetable-${day}`}
+                    className={`p-3 font-medium ${dayIndex < activeTimetableDays.length - 1 ? 'border-r' : ''}`}
+                  >
+                    {day}
+                  </th>
+                ))}
             </tr>
           </thead>
 
@@ -716,25 +1513,41 @@ const openHandout = (handout: Handout) => {
   {timetable.map((row, i) => (
     <tr key={i} className="border-b text-black last:border-0">
       
-      <td className="p-3 border-r text-sm text-gray-500">
-        Block {i + 1}
+      <td className="p-3 border-r text-xs text-gray-500 align-top">
+        {activeTimetableTimeLabels[i] || 'No slot'}
       </td>
 
-      {row.map((cell, j) => (
+      {activeTimetableDays.map((day, j) => {
+        const cell = row[j];
+        const rowStart = activeTimetableRowStarts[i];
+        const hasTimeRange = activeTimetableViewConfig.daySlotStarts[day]?.includes(rowStart);
+
+        if (!cell || !hasTimeRange) {
+          return (
+            <td key={`${day}-${i}`} className="p-3 border-r">
+              <div className="w-full min-h-20 rounded text-xs p-2 bg-gray-200 text-gray-500">
+                No slot
+              </div>
+            </td>
+          );
+        }
+
+        return (
         <td key={j} className="p-3 border-r">
           <div
             onClick={() => toggleCell(i, j)}
-            className={`w-full h-12 rounded text-xs p-1 cursor-pointer transition ${
+            className={`w-full min-h-20 rounded text-xs p-2 cursor-pointer transition ${
               cell.completed
                 ? 'bg-green-200'
                 : 'bg-gray-100 hover:bg-gray-200'
             }`}
           >
-            <p className="font-medium">{cell.subject}</p>
-            <p className="text-[10px]">{cell.topic}</p>
+            <p className="font-medium leading-tight whitespace-normal break-words">{cell.subject}</p>
+            <p className="text-[10px] leading-tight mt-1 whitespace-normal break-words">{cell.topic}</p>
           </div>
         </td>
-      ))}
+      );
+      })}
       
     </tr>
   ))}
@@ -749,6 +1562,22 @@ const openHandout = (handout: Handout) => {
     </div>
   );
 
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [newName, setNewName] = useState("");
+
+
+  const handleRename = (id: string) => {
+  if (!newName.trim()) return;
+
+  setSavedTimetables((prev) =>
+    prev.map((tt) =>
+      tt.id === id ? { ...tt, name: newName } : tt
+    )
+  );
+
+  setEditingId(null);
+};
+
   return (
     <div className="min-h-screen bg-gray-100 font-sans">
       {renderHeader()}
@@ -762,15 +1591,95 @@ const openHandout = (handout: Handout) => {
         
         {/* Placeholder for dashboard screen from wireframe */}
         {currentStep === 'dashboard' && (
-            <div className="max-w-4xl mx-auto mt-10 p-6 flex space-x-6">
-                <div onClick={() => setCurrentStep('timetable')} className="w-48 h-48 bg-white border rounded shadow flex flex-col items-center justify-center cursor-pointer hover:shadow-md transition">
-                  <div className="w-32 h-24 bg-gray-100 mb-2 border grid grid-cols-4 gap-0.5 p-1"><div className="bg-green-300"></div><div className="bg-red-300"></div></div>
-                  <span className="text-sm text-gray-600">My_timetable1</span>
-                </div>
-                <div className="w-48 h-48 border-2 border-dashed border-gray-300 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 transition text-gray-500">
+            <div className="max-w-6xl mx-auto mt-10 p-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                <button
+                  onClick={() => void generateTimetableWithAI()}
+                  className="w-48 h-48 border-2 border-dashed border-gray-300 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 transition text-gray-500"
+                >
                   <span className="text-3xl mb-2">+</span>
-                  <span className="text-sm">Create Custom</span>
-                </div>
+                  <span className="text-sm">{isGeneratingTimetable ? 'Generating...' : 'Generate with AI'}</span>
+                </button>
+
+                {savedTimetables.map((saved) => (
+                      <div
+                        key={saved.id}
+                        className="w-64 bg-white border border-gray-200 rounded-xl p-3 shadow-sm hover:shadow-md transition flex flex-col"
+                      >
+                        {/* Header */}
+                        <div className="flex justify-between items-start mb-2">
+                          <div>
+                            {editingId === saved.id ? (
+                              <input
+                                value={newName}
+                                onChange={(e) => setNewName(e.target.value)}
+                                onBlur={() => handleRename(saved.id)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") handleRename(saved.id);
+                                }}
+                                className="text-sm font-semibold text-gray-800 border-b border-blue-500 outline-none w-full"
+                                autoFocus
+                              />
+                            ) : (
+                              <p
+                                onClick={() => {
+                                  setEditingId(saved.id);
+                                  setNewName(saved.name);
+                                }}
+                                className="text-sm font-semibold text-gray-800 truncate cursor-pointer hover:underline"
+                              >
+                                {saved.name}
+                              </p>
+                            )}
+                            <p className="text-xs text-gray-500">
+                              {saved.source === 'chat' ? 'From chat' : 'From timetable'}
+                            </p>
+                          </div>
+                          <span className="text-[10px] text-gray-400">
+                            {new Date(saved.createdAt).toLocaleDateString()}
+                          </span>
+                        </div>
+
+                        {/* Preview */}
+                        <div className="border border-gray-100 rounded-lg p-2 bg-gray-50 mb-3">
+                          <div className="grid grid-cols-3 gap-2">
+                            {saved.timetable
+                              .slice(0, 2)
+                              .flatMap((row) => row.slice(0, 3))
+                              .map((cell, index) => (
+                                <div
+                                  key={`${saved.id}-${index}`}
+                                  className="bg-white border border-gray-100 rounded-md p-1"
+                                >
+                                  <p className="text-xs font-medium text-gray-700 truncate">
+                                    {cell.subject}
+                                  </p>
+                                  <p className="text-[10px] text-gray-400 truncate">
+                                    {cell.topic}
+                                  </p>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex gap-2 mt-auto">
+                          <button
+                            onClick={() => openSavedTimetable(saved)}
+                            className="flex-1 text-sm px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 hover:cursor-pointer transition"
+                          >
+                            Open
+                          </button>
+                          <button
+                            onClick={() => deleteSavedTimetable(saved.id)}
+                            className="px-3 py-1.5 text-sm text-red-500 hover:bg-red-50 hover:cursor-pointer rounded-lg transition"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+              </div>
             </div>
         )}
       </main>
