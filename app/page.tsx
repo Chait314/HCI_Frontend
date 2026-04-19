@@ -79,9 +79,6 @@ useEffect(() => {
   
   // Pre-populated subjects based on typical academic schedules
   const [subjects, setSubjects] = useState<Subject[]>([
-    { id: 1, name: 'Mathematics', strength: null },
-    { id: 2, name: 'Politics', strength: null },
-    { id: 3, name: 'Literature', strength: null },
   ]);
   const [studyPreferences, setStudyPreferences] = useState<StudyPreferences>({
     workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
