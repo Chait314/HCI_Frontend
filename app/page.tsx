@@ -1219,6 +1219,7 @@ const getHandout = (subjectId: number) => {
   const [savedTimetables, setSavedTimetables] = useState<SavedTimetable[]>([]);
   const [isViewingSavedTimetable, setIsViewingSavedTimetable] = useState(false);
   const [openedSavedViewConfig, setOpenedSavedViewConfig] = useState<TimetableViewConfig | null>(null);
+  const [openedSavedTimetableId, setOpenedSavedTimetableId] = useState<string | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [hasHydratedChats, setHasHydratedChats] = useState(false);
   const [hasRestoredCurrentChatId, setHasRestoredCurrentChatId] = useState(false);
@@ -1651,6 +1652,7 @@ const getHandout = (subjectId: number) => {
     const reopened = saved.timetable.map((row) => row.map((cell) => ({ ...cell })));
     const { rows: finalizedRows } = autoFinalizeTimetable(reopened, saved.viewConfig);
 
+    setOpenedSavedTimetableId(saved.id);
     setTimetable(finalizedRows);
     setIsViewingSavedTimetable(true);
     setOpenedSavedViewConfig(saved.viewConfig);
@@ -1660,6 +1662,12 @@ const getHandout = (subjectId: number) => {
 
   const deleteSavedTimetable = (savedId: string) => {
     setSavedTimetables((prev) => prev.filter((item) => item.id !== savedId));
+
+    if (openedSavedTimetableId === savedId) {
+      setOpenedSavedTimetableId(null);
+      setIsViewingSavedTimetable(false);
+      setOpenedSavedViewConfig(null);
+    }
   };
 
   const createNewChat = () => {
@@ -2013,6 +2021,16 @@ const getHandout = (subjectId: number) => {
   const isSlotStatus = (value: unknown): value is SlotStatus =>
     value === 'pending' || value === 'achieved' || value === 'not-completed';
 
+  const normalizeStoredSlotStatus = (value: unknown): SlotStatus | null => {
+    if (isSlotStatus(value)) return value;
+
+    // Backward compatibility for older persisted values.
+    if (value === 'completed') return 'achieved';
+    if (value === 'not_completed' || value === 'not completed') return 'not-completed';
+
+    return null;
+  };
+
   const normalizeStoredTimetable = (value: unknown): Cell[][] | undefined => {
     if (!Array.isArray(value)) return undefined;
 
@@ -2036,8 +2054,10 @@ const getHandout = (subjectId: number) => {
             let status: SlotStatus = 'pending';
             const statusCandidate = (cell as { status?: unknown }).status;
 
-            if (isSlotStatus(statusCandidate)) {
-              status = statusCandidate;
+            const normalizedStatus = normalizeStoredSlotStatus(statusCandidate);
+
+            if (normalizedStatus) {
+              status = normalizedStatus;
             } else if (typeof (cell as { completed?: unknown }).completed === 'boolean') {
               status = (cell as { completed: boolean }).completed ? 'achieved' : 'pending';
             }
@@ -2235,6 +2255,7 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
 
     setIsViewingSavedTimetable(false);
     setOpenedSavedViewConfig(null);
+    setOpenedSavedTimetableId(null);
     setCurrentStep('timetable');
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to generate timetable.';
@@ -2604,6 +2625,18 @@ useEffect(()=> {
     JSON.stringify(timetable)
   );
 },[timetable]);
+
+useEffect(() => {
+  if (!isViewingSavedTimetable || !openedSavedTimetableId) return;
+
+  setSavedTimetables((prev) =>
+    prev.map((item) =>
+      item.id === openedSavedTimetableId
+        ? { ...item, timetable: timetable.map((row) => row.map((cell) => ({ ...cell }))) }
+        : item,
+    ),
+  );
+}, [timetable, isViewingSavedTimetable, openedSavedTimetableId]);
 
   return (
     <div className="min-h-screen bg-gray-100 font-sans">
