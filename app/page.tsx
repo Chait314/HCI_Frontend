@@ -120,7 +120,12 @@ useEffect(() => {
 
       const normalizedSubjects: Subject[] = parsed
         .map((item) => ({
-          id: typeof item?.id === 'number' ? item.id : Date.now(),
+          id:
+            typeof item?.id === 'number'
+              ? item.id
+              : typeof item?.id === 'string' && !Number.isNaN(Number(item.id))
+                ? Number(item.id)
+                : Date.now(),
           name: typeof item?.name === 'string' ? item.name : '',
           strength:
             typeof item?.strength === 'number' && item.strength >= 0 && item.strength <= 4
@@ -249,6 +254,7 @@ useEffect(() => {
   const [newSubjectName, setNewSubjectName] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   const [subjectTopics, setSubjectTopics] = useState<Record<number, SubjectTopicState>>({});
+  const [isSubjectTopicsHydrated, setIsSubjectTopicsHydrated] = useState(false);
   const [newTopicBySubject, setNewTopicBySubject] = useState<Record<number, string>>({});
   const [isExtractingTopicsBySubject, setIsExtractingTopicsBySubject] = useState<Record<number, boolean>>({});
 
@@ -402,7 +408,10 @@ useEffect(() => {
 
   useEffect(() => {
     const savedSubjectTopics = localStorage.getItem('subjectTopics');
-    if (!savedSubjectTopics) return;
+    if (!savedSubjectTopics) {
+      setIsSubjectTopicsHydrated(true);
+      return;
+    }
 
     try {
       const parsed = JSON.parse(savedSubjectTopics);
@@ -471,19 +480,30 @@ useEffect(() => {
       setSubjectTopics(Object.fromEntries(normalizedEntries));
     } catch (error) {
       console.error('Failed to parse subjectTopics from localStorage:', error);
+    } finally {
+      setIsSubjectTopicsHydrated(true);
     }
   }, []);
 
   useEffect(() => {
+    if (!isSubjectTopicsHydrated) return;
     localStorage.setItem('subjectTopics', JSON.stringify(subjectTopics));
-  }, [subjectTopics]);
+  }, [isSubjectTopicsHydrated, subjectTopics]);
 
   useEffect(() => {
+    if (!isSubjectTopicsHydrated) return;
+    if (subjects.length === 0) return;
+
     setSubjectTopics((prev) => {
       const next: Record<number, SubjectTopicState> = {};
+      const existingEntries = Object.values(prev);
 
       subjects.forEach((subject) => {
-        const existing = prev[subject.id];
+        const existing =
+          prev[subject.id] ||
+          existingEntries.find(
+            (entry) => entry.subjectName.trim().toLowerCase() === subject.name.trim().toLowerCase(),
+          );
         next[subject.id] = {
           subjectId: subject.id,
           subjectName: subject.name,
@@ -493,7 +513,7 @@ useEffect(() => {
 
       return next;
     });
-  }, [subjects]);
+  }, [isSubjectTopicsHydrated, subjects]);
 
 
 
@@ -755,7 +775,12 @@ useEffect(() => {
 
       const normalizedHandouts: Handout[] = parsed
         .map((item) => ({
-          subjectId: typeof item?.subjectId === 'number' ? item.subjectId : -1,
+          subjectId:
+            typeof item?.subjectId === 'number'
+              ? item.subjectId
+              : typeof item?.subjectId === 'string' && !Number.isNaN(Number(item.subjectId))
+                ? Number(item.subjectId)
+                : -1,
           fileName: typeof item?.fileName === 'string' ? item.fileName : '',
           mimeType: typeof item?.mimeType === 'string' ? item.mimeType : 'application/pdf',
           dataUrl: typeof item?.dataUrl === 'string' ? item.dataUrl : '',

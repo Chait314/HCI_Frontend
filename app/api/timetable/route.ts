@@ -55,6 +55,7 @@ type TimetableCell = {
 };
 
 type TimetablePayload = {
+  name?: string;
   timetable: TimetableCell[][];
 };
 
@@ -411,12 +412,16 @@ function normalizeTimetable(
   };
 
   let timetable: unknown = null;
+  let name: string | undefined;
 
   if (Array.isArray(parsed)) {
     timetable = parsed;
   } else if (typeof parsed === "object") {
     const parsedObj = parsed as Record<string, unknown>;
     timetable = parsedObj.timetable;
+    if (typeof parsedObj.name === "string") {
+      name = parsedObj.name;
+    }
 
     if (!Array.isArray(timetable)) {
       const weekdayKeys = orderedWorkingDays.map((day) => day.toLowerCase());
@@ -469,7 +474,10 @@ function normalizeTimetable(
     }
 
     if (normalized.every((row) => row.length === expectedCols)) {
-      return { timetable: normalized };
+      return {
+        name,
+        timetable: normalized,
+      };
     }
   }
 
@@ -488,11 +496,46 @@ function normalizeTimetable(
     }
 
     if (transposed.every((row) => row.length === expectedCols)) {
-      return { timetable: transposed };
+      return {
+        name,
+        timetable: transposed,
+      };
     }
   }
 
   return null;
+}
+
+function toTitleCase(value: string): string {
+  return value
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function buildFallbackName(subjectHint: string): string {
+  const base = `${subjectHint} Weekly Plan`;
+  return base.length <= 25 ? base : base.slice(0, 25).trim();
+}
+
+function sanitizeTimetableName(name: string | null | undefined, subjectHint: string): string {
+  const cleaned = (name || "")
+    .replace(/[^a-zA-Z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const titled = toTitleCase(cleaned);
+  const withHint = titled.toLowerCase().includes(subjectHint.toLowerCase())
+    ? titled
+    : `${subjectHint} ${titled}`.trim();
+
+  const shortened = withHint.slice(0, 25).trim();
+  if (!shortened) {
+    return buildFallbackName(subjectHint);
+  }
+
+  return toTitleCase(shortened);
 }
 
 export async function POST(req: Request) {
@@ -809,7 +852,8 @@ export async function POST(req: Request) {
       "Handouts contain what should be studied in each subject. Scores are from 1 to 5 where 5 means strongest and 1 means weakest. " +
       "Give more time and foundational topics to weaker subjects and advanced revision to stronger subjects. " +
       "When the user asks to edit or change a timetable, treat the previous timetable as the baseline and modify it instead of creating an unrelated new plan. " +
-      'Return strict JSON only with this schema: {"timetable":[[{"subject":"...","topic":"..."}]]}. ' +
+      'Return strict JSON only with this schema: {"name":"...","timetable":[[{"subject":"...","topic":"..."}]]}. ' +
+      "The name must be Title Case, maximum 25 characters, include a subject hint, and contain only letters, numbers, and spaces. " +
       `It must be exactly ${expectedRows} rows and each row must contain exactly ${expectedCols} cells. ` +
       "Do not output markdown, code fences, explanations, tips, or a daily routine. " +
       "Do not use vague placeholder topics such as 'Advanced Topics', 'Foundational Topics', 'Intermediate Topics', or 'Revision' unless those exact phrases appear in handout excerpts.";
@@ -954,6 +998,7 @@ export async function POST(req: Request) {
         });
 
         return NextResponse.json({
+          name: buildFallbackName(subjects[0]?.name || "Study"),
           timetable: previousTimetableNormalized.timetable,
           fallbackUsed: true,
         });
@@ -976,6 +1021,7 @@ export async function POST(req: Request) {
         });
 
         return NextResponse.json({
+          name: buildFallbackName(subjects[0]?.name || "Study"),
           timetable: previousTimetableNormalized.timetable,
           fallbackUsed: true,
         });
@@ -1007,6 +1053,7 @@ export async function POST(req: Request) {
         });
 
         return NextResponse.json({
+          name: buildFallbackName(subjects[0]?.name || "Study"),
           timetable: previousTimetableNormalized.timetable,
           fallbackUsed: true,
         });
@@ -1054,7 +1101,26 @@ export async function POST(req: Request) {
       }),
     );
 
-    return NextResponse.json({ timetable: correctedTimetable });
+    const subjectCounts = new Map<string, number>();
+    correctedTimetable.forEach((row) => {
+      row.forEach((cell) => {
+        const subject = cell.subject.trim();
+        if (!subject || subject.toLowerCase() === "no slot") return;
+        subjectCounts.set(subject, (subjectCounts.get(subject) || 0) + 1);
+      });
+    });
+
+    const dominantSubject =
+      [...subjectCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ||
+      subjects[0]?.name ||
+      "Study";
+
+    const safeName = sanitizeTimetableName(normalized.name, dominantSubject);
+
+    return NextResponse.json({
+      name: safeName,
+      timetable: correctedTimetable,
+    });
   } catch (error) {
     console.error("Timetable generation error:", error);
     return NextResponse.json(
