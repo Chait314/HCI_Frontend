@@ -1057,6 +1057,7 @@ const getHandout = (subjectId: number) => {
       console.error(err);
     }
     setIsSending(false);
+  //  localStorage.setItem("curChats", JSON.stringify(chats))
   };
 
   const currentChat = chats.find(c => c.chat_id === currentChatId);
@@ -1076,7 +1077,7 @@ const getHandout = (subjectId: number) => {
         </button>
 
         <div className="mt-4 space-y-1">
-          {chats.map(chat => (
+          {chats.length !== 0 && chats.map((chat) => (
             <button
               key={chat.chat_id}
               onClick={() => setCurrentChatId(chat.chat_id)}
@@ -1461,7 +1462,27 @@ const openHandout = (handout: Handout) => {
   </div>
   <h2 className='p-3 font-bold'>Subjects and Topics Completed:</h2>
   <div className="flex items-center pt-3 space-x-2 space-y-4">
-    
+    <div className="space-y-4">
+  {timetable.map((row, rowIndex) => (
+    <div key={rowIndex} className="flex gap-3 flex-wrap">
+      {row.map((cell, colIndex) => (
+        cell.completed && (
+          <div
+            key={colIndex}
+            className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 shadow-sm min-w-[120px]"
+          >
+            <p className="text-sm font-semibold text-green-800 truncate">
+              {cell.subject}
+            </p>
+            <p className="text-xs text-green-600 truncate">
+              {cell.topic}
+            </p>
+          </div>
+        )
+      ))}
+    </div>
+  ))}
+</div>
   
 </div>
 </div>
