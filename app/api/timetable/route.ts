@@ -519,7 +519,10 @@ function buildFallbackName(subjectHint: string): string {
   return base.length <= 25 ? base : base.slice(0, 25).trim();
 }
 
-function sanitizeTimetableName(name: string | null | undefined, subjectHint: string): string {
+function sanitizeTimetableName(
+  name: string | null | undefined,
+  subjectHint: string,
+): string {
   const cleaned = (name || "")
     .replace(/[^a-zA-Z0-9\s]/g, " ")
     .replace(/\s+/g, " ")

@@ -1212,14 +1212,103 @@ const getHandout = (subjectId: number) => {
     }[];
   }
 
+  const CHATS_STORAGE_KEY = 'chats';
+  const CURRENT_CHAT_ID_STORAGE_KEY = 'currentChatId';
+
   const [chats, setChats] = useState<Chats[]>([]);
   const [savedTimetables, setSavedTimetables] = useState<SavedTimetable[]>([]);
   const [isViewingSavedTimetable, setIsViewingSavedTimetable] = useState(false);
   const [openedSavedViewConfig, setOpenedSavedViewConfig] = useState<TimetableViewConfig | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [hasHydratedChats, setHasHydratedChats] = useState(false);
+  const [hasRestoredCurrentChatId, setHasRestoredCurrentChatId] = useState(false);
   const [currentGeneratedTimetableName, setCurrentGeneratedTimetableName] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [sendTex, setSendTex] = useState('');
+
+  const normalizeStoredTimetableRows = (value: unknown): ChatTimetableCell[][] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+
+    const rows = value
+      .map((row) => {
+        if (!Array.isArray(row)) return [];
+
+        return row
+          .map((cell) => {
+            if (!cell || typeof cell !== 'object') return null;
+
+            const subject = typeof (cell as { subject?: unknown }).subject === 'string'
+              ? (cell as { subject: string }).subject
+              : '';
+            const topic = typeof (cell as { topic?: unknown }).topic === 'string'
+              ? (cell as { topic: string }).topic
+              : '';
+
+            if (!subject && !topic) return null;
+            return { subject, topic };
+          })
+          .filter((cell): cell is ChatTimetableCell => cell !== null);
+      })
+      .filter((row) => row.length > 0);
+
+    return rows.length > 0 ? rows : undefined;
+  };
+
+  const normalizeStoredChats = (value: unknown): Chats[] => {
+    if (!Array.isArray(value)) return [];
+
+    return value.map((chat, chatIndex) => {
+      const messages: Chats['messages'] = Array.isArray((chat as { messages?: unknown })?.messages)
+        ? ((chat as { messages: unknown[] }).messages)
+            .map((message, messageIndex): Chats['messages'][number] | null => {
+              const text = typeof (message as { message?: unknown })?.message === 'string'
+                ? (message as { message: string }).message
+                : '';
+              const timetable = normalizeStoredTimetableRows((message as { timetable?: unknown })?.timetable);
+              const normalizedType: 'text' | 'timetable' | undefined =
+                (message as { type?: unknown })?.type === 'timetable' && timetable
+                  ? 'timetable'
+                  : (message as { type?: unknown })?.type === 'text'
+                    ? 'text'
+                    : undefined;
+
+              if (!text && !timetable) return null;
+
+              return {
+                id:
+                  typeof (message as { id?: unknown })?.id === 'string' && (message as { id: string }).id.trim()
+                    ? (message as { id: string }).id
+                    : `${Date.now()}-${chatIndex}-${messageIndex}`,
+                role: ((message as { role?: unknown })?.role === 'ai' ? 'ai' : 'user') as 'user' | 'ai',
+                message: text,
+                type: normalizedType,
+                timetable,
+                timetableName:
+                  typeof (message as { timetableName?: unknown })?.timetableName === 'string'
+                    ? (message as { timetableName: string }).timetableName
+                    : undefined,
+                accepted: Boolean((message as { accepted?: unknown })?.accepted),
+              };
+            })
+            .filter((message): message is Chats['messages'][number] => message !== null)
+        : [];
+
+      const chatIdCandidate = (chat as { chat_id?: unknown })?.chat_id;
+      const chatNameCandidate = (chat as { chat_name?: unknown })?.chat_name;
+
+      return {
+        chat_id:
+          typeof chatIdCandidate === 'string' && chatIdCandidate.trim()
+            ? chatIdCandidate
+            : `${Date.now()}-${chatIndex}`,
+        chat_name:
+          typeof chatNameCandidate === 'string' && chatNameCandidate.trim()
+            ? chatNameCandidate
+            : `chat new ${chatIndex + 1}`,
+        messages,
+      };
+    });
+  };
 
   const subjectPreviewPalettes = [
     { bar: 'bg-emerald-500', chip: 'bg-emerald-100 text-emerald-700' },
@@ -1422,6 +1511,64 @@ const getHandout = (subjectId: number) => {
     localStorage.setItem('acceptedTimetables', JSON.stringify(savedTimetables));
   }, [savedTimetables]);
 
+  useEffect(() => {
+    const savedChats = localStorage.getItem(CHATS_STORAGE_KEY);
+
+    if (!savedChats) {
+      setHasHydratedChats(true);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(savedChats);
+      setChats(normalizeStoredChats(parsed));
+    } catch (error) {
+      console.error('Failed to parse chats:', error);
+    } finally {
+      setHasHydratedChats(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedChats) return;
+    localStorage.setItem(CHATS_STORAGE_KEY, JSON.stringify(chats));
+  }, [chats, hasHydratedChats]);
+
+  useEffect(() => {
+    if (!hasHydratedChats) return;
+
+    const savedCurrentChatId = localStorage.getItem(CURRENT_CHAT_ID_STORAGE_KEY);
+    if (savedCurrentChatId) {
+      setCurrentChatId(savedCurrentChatId);
+    }
+
+    setHasRestoredCurrentChatId(true);
+  }, [hasHydratedChats]);
+
+  useEffect(() => {
+    if (!hasHydratedChats) return;
+
+    if (chats.length === 0) {
+      setCurrentChatId(null);
+      return;
+    }
+
+    if (!currentChatId || !chats.some((chat) => chat.chat_id === currentChatId)) {
+      setCurrentChatId(chats[0].chat_id);
+    }
+  }, [chats, currentChatId, hasHydratedChats]);
+
+  useEffect(() => {
+    if (!hasRestoredCurrentChatId) return;
+
+    if (currentChatId) {
+      localStorage.setItem(CURRENT_CHAT_ID_STORAGE_KEY, currentChatId);
+      return;
+    }
+
+    localStorage.removeItem(CURRENT_CHAT_ID_STORAGE_KEY);
+  }, [currentChatId, hasRestoredCurrentChatId]);
+
   const saveAcceptedTimetable = (
     timetableRows: ChatTimetableCell[][],
     source: SavedTimetable['source'],
@@ -1512,21 +1659,26 @@ const getHandout = (subjectId: number) => {
   };
 
   const createNewChat = () => {
-    const newChat: Chats = {
-      chat_id: Date.now().toString(),
-      chat_name: `chat new ${chats.length + 1}`,
-      messages: []
-    };
+    const chatId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-    setChats([newChat, ...chats]);
-    setCurrentChatId(newChat.chat_id);
+    setChats((prevChats) => {
+      const newChat: Chats = {
+        chat_id: chatId,
+        chat_name: `chat new ${prevChats.length + 1}`,
+        messages: []
+      };
+
+      return [newChat, ...prevChats];
+    });
+
+    setCurrentChatId(chatId);
   };
 
   useEffect(()=>{
-    if(currentStep === 'chat' && chats.length === 0){
+    if(currentStep === 'chat' && hasHydratedChats && chats.length === 0){
       createNewChat();
     }
-  },[currentStep, chats]);
+  },[currentStep, chats.length, hasHydratedChats]);
 
   const handleSend = async(e: React.MouseEvent<HTMLButtonElement>) => {
     if (!input.trim() || !currentChatId) return;
@@ -1677,21 +1829,27 @@ const getHandout = (subjectId: number) => {
   const renderChatScreen = () => (
     <div className="flex h-[calc(100vh-72px)]">
       {/* Sidebar */}
-      <div className='w-64 h-150 overflow-y-auto'>
+      <div className="w-64 h-full overflow-y-auto bg-slate-50/80 border-r border-slate-200 p-3">
         <button 
           onClick={createNewChat}
-          className="w-full py-2 bg-white border text-left px-4 rounded shadow-sm text-sm text-gray-700">
-          + new chat
+          className="w-full rounded-xl border border-emerald-600 bg-emerald-600 px-4 py-2.5 text-left text-sm font-semibold text-white shadow-sm transition-all duration-200 hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2"
+        >
+          + New Chat
         </button>
 
-        <div className="mt-4 space-y-1">
+        <div className="mt-4 space-y-1.5">
           {chats.map(chat => (
             <button
               key={chat.chat_id}
               onClick={() => setCurrentChatId(chat.chat_id)}
-              className="w-full text-left px-4 py-2 text-sm text-gray-600 hover:bg-gray-300 rounded"
+              aria-current={currentChatId === chat.chat_id ? 'page' : undefined}
+              className={`w-full text-left px-3 py-2.5 rounded-xl border transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-1 ${
+                currentChatId === chat.chat_id
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-900 shadow-sm'
+                  : 'bg-white border-transparent text-slate-600 hover:bg-white hover:border-slate-200 hover:text-slate-800'
+              }`}
             >
-              {chat.chat_name}
+              <span className="block truncate text-sm font-medium">{chat.chat_name}</span>
             </button>
           ))}
     </div>
