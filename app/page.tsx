@@ -290,53 +290,80 @@ useEffect(() => {
 
   // Screen 1: Subject Setup
   const renderSubjectsScreen = () => (
-    <div className="max-w-3xl mx-auto mt-10 p-6 bg-white border rounded shadow">
-      <div className="flex justify-between mb-6">
-        <h2 className="text-xl font-medium text-gray-800 max-w-lg">
-          Add your subjects and rate your weaknesses and strengths in each of them, to help our AI-bot get a better context.
-        </h2>
-        <div className='flex space-x-3'>
-          <button onClick={() => setCurrentStep('uploads')} className="px-6 py-2 bg-black text-white rounded hover:bg-gray-800 hover:cursor-pointer">
-          Upload Handouts
-        </button>
-        <button onClick= {()=>setIsAdding(true)}className='px-6 py-2 bg-green-500 text-white rounded hover:bg-green-800 hover:cursor-pointer'>
-          +add a subject
-        </button>
+    <div className="max-w-7xl mx-auto mt-10 px-4">
+      <div className="flex flex-col lg:flex-row lg:items-start gap-6">
+        <div className="flex-1 max-w-3xl p-6 bg-white border rounded shadow">
+          <div className="flex justify-between mb-6">
+            <h2 className="text-xl font-medium text-gray-800 max-w-lg">
+              Add your subjects and rate your weaknesses and strengths in each of them, to help our AI-bot get a better context.
+            </h2>
+            <div className='flex space-x-3'>
+              <button onClick={() => setCurrentStep('uploads')} className="px-6 py-2 bg-black text-white rounded hover:bg-gray-800 hover:cursor-pointer">
+              Upload Handouts
+            </button>
+            <button onClick= {()=>setIsAdding(true)}className='px-6 py-2 bg-green-500 text-white rounded hover:bg-green-800 hover:cursor-pointer'>
+              +add a subject
+            </button>
+            </div>
+
+          </div>
+          {isAdding && (
+            <div className="mt-4 flex space-x-2">
+              <input
+                type="text"
+                value={newSubjectName}
+                onChange={(e) => setNewSubjectName(e.target.value)}
+                placeholder="Enter subject name"
+                className="border p-2 rounded w-full text-black"
+              />
+              <button
+                onClick={() => {
+                  if (newSubjectName.trim() === '') return;
+
+                  const newSubject = {
+                    id: subjects.length + 1,
+                    name: newSubjectName,
+                    strength: null
+                  };
+
+                  setSubjects([...subjects, newSubject]);
+                  setNewSubjectName('');
+                  setIsAdding(false);
+                }}
+                className="bg-blue-500 text-white px-4 rounded hover:cursor-pointer hover:bg-blue-700 active:bg-gray-600"
+              >
+                Add
+              </button>
+            </div>
+          )}
+
+          <div className="mt-8">
+            <h3 className="text-lg text-gray-600 border-b pb-2 mb-4">Current Courses:</h3>
+
+            {subjects.map((subject, index) => (
+              <div key={subject.id} className="mb-6 p-4 bg-gray-50 rounded">
+                <p className="font-medium text-gray-700 mb-3">{index + 1}. {subject.name}</p>
+                <div className="flex space-x-2">
+                  {strengthColors.map((colorClass, i) => (
+                    <button
+                      key={i}
+                      className={`w-12 h-8 rounded ${colorClass} ${subject.strength === i ? 'ring-4 ring-gray-400 ring-offset-1' : ''}`}
+                      onClick={() => {
+                        const newSubjects = [...subjects];
+                        newSubjects[index].strength = i;
+                        setSubjects(newSubjects);
+                      }}
+                    >
+                      <nav className='text-black'>{strengthNumbers[i]}</nav>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
-        
-      </div>
-      {isAdding && (
-        <div className="mt-4 flex space-x-2">
-          <input
-            type="text"
-            value={newSubjectName}
-            onChange={(e) => setNewSubjectName(e.target.value)}
-            placeholder="Enter subject name"
-            className="border p-2 rounded w-full text-black"
-          />
-          <button
-            onClick={() => {
-              if (newSubjectName.trim() === '') return;
 
-              const newSubject = {
-                id: subjects.length + 1,
-                name: newSubjectName,
-                strength: null
-              };
-
-              setSubjects([...subjects, newSubject]);
-              setNewSubjectName('');
-              setIsAdding(false);
-            }}
-            className="bg-blue-500 text-white px-4 rounded hover:cursor-pointer hover:bg-blue-700 active:bg-gray-600"
-          >
-            Add
-          </button>
-        </div>
-      )}
-
-      <div className="mt-8">
-        <div className="mb-8 p-4 bg-gray-50 rounded border">
+        <div className="w-full lg:w-120 p-4 bg-gray-50 border rounded shadow-sm">
           <h3 className="text-lg text-gray-700 mb-3">Study Availability</h3>
 
           <p className="text-sm text-gray-600 mb-2">Choose working days (Sun to Sat):</p>
@@ -426,29 +453,6 @@ useEffect(() => {
             </label>
           </div>
         </div>
-
-        <h3 className="text-lg text-gray-600 border-b pb-2 mb-4">Current Courses:</h3>
-        
-        {subjects.map((subject, index) => (
-          <div key={subject.id} className="mb-6 p-4 bg-gray-50 rounded">
-            <p className="font-medium text-gray-700 mb-3">{index + 1}. {subject.name}</p>
-            <div className="flex space-x-2">
-              {strengthColors.map((colorClass, i) => (
-                <button
-                  key={i}
-                  className={`w-12 h-8 rounded ${colorClass} ${subject.strength === i ? 'ring-4 ring-gray-400 ring-offset-1' : ''}`}
-                  onClick={() => {
-                    const newSubjects = [...subjects];
-                    newSubjects[index].strength = i;
-                    setSubjects(newSubjects);
-                  }}
-                >
-                  <nav className='text-black'>{strengthNumbers[i]}</nav>
-                </button>
-              ))}
-            </div>
-          </div>
-        ))}
       </div>
     </div>
   );
