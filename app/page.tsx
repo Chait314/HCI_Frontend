@@ -1521,7 +1521,7 @@ const openHandout = (handout: Handout) => {
           )}
         </div>
       </div>
-      <p className="text-gray-600 mb-6">You can track your progress by marking green when you finished a task, else we'll mark it red.</p>
+      <p className="text-gray-600 mb-6">You can track your progress by marking green when you finished a task</p>
       {timetableError && (
         <p className="text-sm text-red-600 mb-4">{timetableError}</p>
       )}
