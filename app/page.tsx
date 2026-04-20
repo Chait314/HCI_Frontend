@@ -2,12 +2,28 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-type Step = 'subjects' | 'uploads' | 'chat' | 'timetable' | 'dashboard' | 'custom' | 'data'
+type Step = 'subjects' | 'uploads' | 'topics' | 'chat' | 'timetable' | 'dashboard' | 'custom' | 'data'
 
 interface Subject {
   id: number;
   name: string;
   strength: number | null;
+}
+
+type TopicSource = 'llm' | 'manual';
+type TopicProgressState = 'completed' | 'do-now' | 'later';
+
+interface SubjectTopic {
+  id: string;
+  name: string;
+  status: TopicProgressState;
+  source: TopicSource;
+}
+
+interface SubjectTopicState {
+  subjectId: number;
+  subjectName: string;
+  topics: SubjectTopic[];
 }
 
 type StudyPreferences = {
@@ -104,7 +120,12 @@ useEffect(() => {
 
       const normalizedSubjects: Subject[] = parsed
         .map((item) => ({
-          id: typeof item?.id === 'number' ? item.id : Date.now(),
+          id:
+            typeof item?.id === 'number'
+              ? item.id
+              : typeof item?.id === 'string' && !Number.isNaN(Number(item.id))
+                ? Number(item.id)
+                : Date.now(),
           name: typeof item?.name === 'string' ? item.name : '',
           strength:
             typeof item?.strength === 'number' && item.strength >= 0 && item.strength <= 4
@@ -232,6 +253,10 @@ useEffect(() => {
 
   const [newSubjectName, setNewSubjectName] = useState('');
   const [isAdding, setIsAdding] = useState(false);
+  const [subjectTopics, setSubjectTopics] = useState<Record<number, SubjectTopicState>>({});
+  const [isSubjectTopicsHydrated, setIsSubjectTopicsHydrated] = useState(false);
+  const [newTopicBySubject, setNewTopicBySubject] = useState<Record<number, string>>({});
+  const [isExtractingTopicsBySubject, setIsExtractingTopicsBySubject] = useState<Record<number, boolean>>({});
 
   const strengthColors = [
     'bg-red-500 hover:bg-red-600', 
@@ -242,6 +267,253 @@ useEffect(() => {
   ];
 
   const strengthNumbers = [1,2,3,4,5]
+
+  const normalizeTopicName = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
+
+  const dedupeTopicNames = (topicNames: string[]) => {
+    const seen = new Set<string>();
+
+    return topicNames
+      .map((topic) => topic.trim().replace(/\s+/g, ' '))
+      .filter((topic) => topic.length > 0)
+      .filter((topic) => {
+        const normalized = normalizeTopicName(topic);
+        if (!normalized || seen.has(normalized)) return false;
+        seen.add(normalized);
+        return true;
+      });
+  };
+
+  const buildPendingTopicsPayload = () =>
+    subjects
+      .map((subject) => {
+        const subjectState = subjectTopics[subject.id];
+        const topics = (subjectState?.topics || [])
+          .filter((topic) => topic.status === 'do-now')
+          .map((topic) => topic.name.trim())
+          .filter((topic) => topic.length > 0);
+
+        return {
+          subjectId: subject.id,
+          subjectName: subject.name,
+          topics,
+        };
+      })
+      .filter((subjectEntry) => subjectEntry.topics.length > 0);
+
+  const mergeExtractedTopics = (
+    subjectId: number,
+    subjectName: string,
+    extractedTopicNames: string[],
+  ) => {
+    setSubjectTopics((prev) => {
+      const previous = prev[subjectId];
+      const previousTopics = previous?.topics || [];
+      const statusMap = new Map(
+        previousTopics.map((topic) => [normalizeTopicName(topic.name), topic.status]),
+      );
+
+      const dedupedExtracted = dedupeTopicNames(extractedTopicNames);
+      const extractedTopics: SubjectTopic[] = dedupedExtracted.map((topicName) => ({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        name: topicName,
+        status: statusMap.get(normalizeTopicName(topicName)) || 'do-now',
+        source: 'llm',
+      }));
+
+      const extractedSet = new Set(dedupedExtracted.map((topic) => normalizeTopicName(topic)));
+      const manualTopics = previousTopics.filter(
+        (topic) => topic.source === 'manual' && !extractedSet.has(normalizeTopicName(topic.name)),
+      );
+
+      return {
+        ...prev,
+        [subjectId]: {
+          subjectId,
+          subjectName,
+          topics: [...manualTopics, ...extractedTopics],
+        },
+      };
+    });
+  };
+
+  const removeExtractedTopicsForSubject = (subjectId: number) => {
+    setSubjectTopics((prev) => {
+      const existing = prev[subjectId];
+      if (!existing) return prev;
+
+      const manualOnly = existing.topics.filter((topic) => topic.source === 'manual');
+
+      return {
+        ...prev,
+        [subjectId]: {
+          ...existing,
+          topics: manualOnly,
+        },
+      };
+    });
+  };
+
+  const extractTopicsForHandout = async (
+    subjectId: number,
+    subjectName: string,
+    handout: Handout,
+  ) => {
+    setIsExtractingTopicsBySubject((prev) => ({ ...prev, [subjectId]: true }));
+    setHandoutStatus((prev) => ({ ...prev, [subjectId]: 'Extracting topics from handout...' }));
+
+    try {
+      const response = await fetch('/api/topics/extract', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          subject: {
+            id: subjectId,
+            name: subjectName,
+          },
+          handout,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || 'Topic extraction failed.');
+      }
+
+      const extractedTopics = Array.isArray(data?.topics)
+        ? data.topics.filter((topic: unknown): topic is string => typeof topic === 'string')
+        : [];
+
+      mergeExtractedTopics(subjectId, subjectName, extractedTopics);
+
+      setHandoutStatus((prev) => ({
+        ...prev,
+        [subjectId]:
+          extractedTopics.length > 0
+            ? `Handout saved. ${extractedTopics.length} topics extracted.`
+            : 'Handout saved. No topics extracted, you can add topics manually in Topic Review.',
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Topic extraction failed.';
+      setHandoutStatus((prev) => ({
+        ...prev,
+        [subjectId]: `Handout saved, but topic extraction failed. ${message}`,
+      }));
+    } finally {
+      setIsExtractingTopicsBySubject((prev) => ({ ...prev, [subjectId]: false }));
+    }
+  };
+
+  useEffect(() => {
+    const savedSubjectTopics = localStorage.getItem('subjectTopics');
+    if (!savedSubjectTopics) {
+      setIsSubjectTopicsHydrated(true);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(savedSubjectTopics);
+      if (!parsed || typeof parsed !== 'object') return;
+
+      const normalizedEntries = Object.entries(parsed as Record<string, unknown>)
+        .map(([subjectKey, value]) => {
+          const subjectId = Number(subjectKey);
+          if (Number.isNaN(subjectId) || !value || typeof value !== 'object') return null;
+
+          const entry = value as {
+            subjectId?: unknown;
+            subjectName?: unknown;
+            topics?: unknown;
+          };
+
+          const subjectName = typeof entry.subjectName === 'string' ? entry.subjectName : '';
+          const topics = Array.isArray(entry.topics)
+            ? entry.topics
+                .map((topic) => {
+                  if (!topic || typeof topic !== 'object') return null;
+
+                  const typedTopic = topic as {
+                    id?: unknown;
+                    name?: unknown;
+                    status?: unknown;
+                    completed?: unknown;
+                    source?: unknown;
+                  };
+
+                  if (typeof typedTopic.name !== 'string') return null;
+
+                  const status: TopicProgressState =
+                    typedTopic.status === 'completed' ||
+                    typedTopic.status === 'do-now' ||
+                    typedTopic.status === 'later'
+                      ? typedTopic.status
+                      : Boolean(typedTopic.completed)
+                        ? 'completed'
+                        : 'do-now';
+
+                  return {
+                    id:
+                      typeof typedTopic.id === 'string'
+                        ? typedTopic.id
+                        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+                    name: typedTopic.name,
+                    status,
+                    source: typedTopic.source === 'manual' ? 'manual' : 'llm',
+                  } satisfies SubjectTopic;
+                })
+                .filter((topic): topic is SubjectTopic => topic !== null)
+            : [];
+
+          return [
+            subjectId,
+            {
+              subjectId,
+              subjectName,
+              topics,
+            } satisfies SubjectTopicState,
+          ] as const;
+        })
+        .filter((entry): entry is readonly [number, SubjectTopicState] => entry !== null);
+
+      setSubjectTopics(Object.fromEntries(normalizedEntries));
+    } catch (error) {
+      console.error('Failed to parse subjectTopics from localStorage:', error);
+    } finally {
+      setIsSubjectTopicsHydrated(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isSubjectTopicsHydrated) return;
+    localStorage.setItem('subjectTopics', JSON.stringify(subjectTopics));
+  }, [isSubjectTopicsHydrated, subjectTopics]);
+
+  useEffect(() => {
+    if (!isSubjectTopicsHydrated) return;
+    if (subjects.length === 0) return;
+
+    setSubjectTopics((prev) => {
+      const next: Record<number, SubjectTopicState> = {};
+      const existingEntries = Object.values(prev);
+
+      subjects.forEach((subject) => {
+        const existing =
+          prev[subject.id] ||
+          existingEntries.find(
+            (entry) => entry.subjectName.trim().toLowerCase() === subject.name.trim().toLowerCase(),
+          );
+        next[subject.id] = {
+          subjectId: subject.id,
+          subjectName: subject.name,
+          topics: existing?.topics || [],
+        };
+      });
+
+      return next;
+    });
+  }, [isSubjectTopicsHydrated, subjects]);
 
 
 
@@ -277,6 +549,13 @@ useEffect(() => {
         </button>
 
         <button 
+          onClick={() => setCurrentStep('topics')}
+          className={`px-4 py-2 text-sm font-semibold hover:cursor-pointer rounded ${currentStep === 'topics' ? 'bg-white text-green-800' : 'bg-green-700 text-white hover:bg-green-600'}`}
+        >
+          Topic Review
+        </button>
+
+        <button 
           onClick={() => setCurrentStep('data')}
           className={`px-4 py-2 text-sm font-semibold hover:cursor-pointer rounded ${currentStep === 'data' ? 'bg-white text-green-800' : 'bg-green-700 text-white hover:bg-green-600'}`}
         >
@@ -290,53 +569,80 @@ useEffect(() => {
 
   // Screen 1: Subject Setup
   const renderSubjectsScreen = () => (
-    <div className="max-w-3xl mx-auto mt-10 p-6 bg-white border rounded shadow">
-      <div className="flex justify-between mb-6">
-        <h2 className="text-xl font-medium text-gray-800 max-w-lg">
-          Add your subjects and rate your weaknesses and strengths in each of them, to help our AI-bot get a better context.
-        </h2>
-        <div className='flex space-x-3'>
-          <button onClick={() => setCurrentStep('uploads')} className="px-6 py-2 bg-black text-white rounded hover:bg-gray-800 hover:cursor-pointer">
-          Upload Handouts
-        </button>
-        <button onClick= {()=>setIsAdding(true)}className='px-6 py-2 bg-green-500 text-white rounded hover:bg-green-800 hover:cursor-pointer'>
-          +add a subject
-        </button>
+    <div className="max-w-7xl mx-auto mt-10 px-4">
+      <div className="flex flex-col lg:flex-row lg:items-start gap-6">
+        <div className="flex-1 max-w-3xl p-6 bg-white border rounded shadow">
+          <div className="flex justify-between mb-6">
+            <h2 className="text-xl font-medium text-gray-800 max-w-lg">
+              Add your subjects and rate your weaknesses and strengths in each of them, to help our AI-bot get a better context.
+            </h2>
+            <div className='flex space-x-3'>
+              <button onClick={() => setCurrentStep('uploads')} className="px-6 py-2 bg-black text-white rounded hover:bg-gray-800 hover:cursor-pointer">
+              Upload Handouts
+            </button>
+            <button onClick= {()=>setIsAdding(true)}className='px-6 py-2 bg-green-500 text-white rounded hover:bg-green-800 hover:cursor-pointer'>
+              +add a subject
+            </button>
+            </div>
+
+          </div>
+          {isAdding && (
+            <div className="mt-4 flex space-x-2">
+              <input
+                type="text"
+                value={newSubjectName}
+                onChange={(e) => setNewSubjectName(e.target.value)}
+                placeholder="Enter subject name"
+                className="border p-2 rounded w-full text-black"
+              />
+              <button
+                onClick={() => {
+                  if (newSubjectName.trim() === '') return;
+
+                  const newSubject = {
+                    id: subjects.length + 1,
+                    name: newSubjectName,
+                    strength: null
+                  };
+
+                  setSubjects([...subjects, newSubject]);
+                  setNewSubjectName('');
+                  setIsAdding(false);
+                }}
+                className="bg-blue-500 text-white px-4 rounded hover:cursor-pointer hover:bg-blue-700 active:bg-gray-600"
+              >
+                Add
+              </button>
+            </div>
+          )}
+
+          <div className="mt-8">
+            <h3 className="text-lg text-gray-600 border-b pb-2 mb-4">Current Courses:</h3>
+
+            {subjects.map((subject, index) => (
+              <div key={subject.id} className="mb-6 p-4 bg-gray-50 rounded">
+                <p className="font-medium text-gray-700 mb-3">{index + 1}. {subject.name}</p>
+                <div className="flex space-x-2">
+                  {strengthColors.map((colorClass, i) => (
+                    <button
+                      key={i}
+                      className={`w-12 h-8 rounded ${colorClass} ${subject.strength === i ? 'ring-4 ring-gray-400 ring-offset-1' : ''}`}
+                      onClick={() => {
+                        const newSubjects = [...subjects];
+                        newSubjects[index].strength = i;
+                        setSubjects(newSubjects);
+                      }}
+                    >
+                      <nav className='text-black'>{strengthNumbers[i]}</nav>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
-        
-      </div>
-      {isAdding && (
-        <div className="mt-4 flex space-x-2">
-          <input
-            type="text"
-            value={newSubjectName}
-            onChange={(e) => setNewSubjectName(e.target.value)}
-            placeholder="Enter subject name"
-            className="border p-2 rounded w-full text-black"
-          />
-          <button
-            onClick={() => {
-              if (newSubjectName.trim() === '') return;
 
-              const newSubject = {
-                id: subjects.length + 1,
-                name: newSubjectName,
-                strength: null
-              };
-
-              setSubjects([...subjects, newSubject]);
-              setNewSubjectName('');
-              setIsAdding(false);
-            }}
-            className="bg-blue-500 text-white px-4 rounded hover:cursor-pointer hover:bg-blue-700 active:bg-gray-600"
-          >
-            Add
-          </button>
-        </div>
-      )}
-
-      <div className="mt-8">
-        <div className="mb-8 p-4 bg-gray-50 rounded border">
+        <div className="w-full lg:w-120 p-4 bg-gray-50 border rounded shadow-sm">
           <h3 className="text-lg text-gray-700 mb-3">Study Availability</h3>
 
           <p className="text-sm text-gray-600 mb-2">Choose working days (Sun to Sat):</p>
@@ -426,29 +732,6 @@ useEffect(() => {
             </label>
           </div>
         </div>
-
-        <h3 className="text-lg text-gray-600 border-b pb-2 mb-4">Current Courses:</h3>
-        
-        {subjects.map((subject, index) => (
-          <div key={subject.id} className="mb-6 p-4 bg-gray-50 rounded">
-            <p className="font-medium text-gray-700 mb-3">{index + 1}. {subject.name}</p>
-            <div className="flex space-x-2">
-              {strengthColors.map((colorClass, i) => (
-                <button
-                  key={i}
-                  className={`w-12 h-8 rounded ${colorClass} ${subject.strength === i ? 'ring-4 ring-gray-400 ring-offset-1' : ''}`}
-                  onClick={() => {
-                    const newSubjects = [...subjects];
-                    newSubjects[index].strength = i;
-                    setSubjects(newSubjects);
-                  }}
-                >
-                  <nav className='text-black'>{strengthNumbers[i]}</nav>
-                </button>
-              ))}
-            </div>
-          </div>
-        ))}
       </div>
     </div>
   );
@@ -492,7 +775,12 @@ useEffect(() => {
 
       const normalizedHandouts: Handout[] = parsed
         .map((item) => ({
-          subjectId: typeof item?.subjectId === 'number' ? item.subjectId : -1,
+          subjectId:
+            typeof item?.subjectId === 'number'
+              ? item.subjectId
+              : typeof item?.subjectId === 'string' && !Number.isNaN(Number(item.subjectId))
+                ? Number(item.subjectId)
+                : -1,
           fileName: typeof item?.fileName === 'string' ? item.fileName : '',
           mimeType: typeof item?.mimeType === 'string' ? item.mimeType : 'application/pdf',
           dataUrl: typeof item?.dataUrl === 'string' ? item.dataUrl : '',
@@ -520,17 +808,14 @@ useEffect(() => {
     return;
   }
 
-  const existingHandout = handouts.find((h) => h.subjectId === subjectid);
-  if (existingHandout) {
-    setHandoutStatus((prev) => ({
-      ...prev,
-      [subjectid]: 'A handout already exists for this subject. Delete it first to upload a new one.',
-    }));
-    return;
-  }
-
   try {
     const dataUrl = await fileToDataUrl(file);
+    const matchedSubject = subjects.find((subject) => subject.id === subjectid);
+
+    if (!matchedSubject) {
+      setHandoutStatus((prev) => ({ ...prev, [subjectid]: 'Subject not found.' }));
+      return;
+    }
 
     const newHandout: Handout = {
       subjectId: subjectid,
@@ -543,8 +828,15 @@ useEffect(() => {
       dataUrl,
     };
 
-    setHandouts((prev) => [...prev, newHandout]);
-    setHandoutStatus((prev) => ({ ...prev, [subjectid]: 'Handout saved successfully.' }));
+    setHandouts((prev) => {
+      const withoutSubjectHandout = prev.filter((h) => h.subjectId !== subjectid);
+      return [...withoutSubjectHandout, newHandout];
+    });
+    setHandoutStatus((prev) => ({
+      ...prev,
+      [subjectid]: 'Handout saved. Extracting topics...',
+    }));
+    await extractTopicsForHandout(subjectid, matchedSubject.name, newHandout);
   } catch (error) {
     console.error(error);
     setHandoutStatus((prev) => ({ ...prev, [subjectid]: 'Could not save this file.' }));
@@ -554,6 +846,7 @@ useEffect(() => {
 const deleteHandout = (subjectId: number) => {
   setHandouts((prev) => prev.filter((h) => h.subjectId !== subjectId));
   setHandoutStatus((prev) => ({ ...prev, [subjectId]: 'Handout deleted.' }));
+  removeExtractedTopicsForSubject(subjectId);
 };
 
 const getFileName = (subjectId: number) => {
@@ -570,7 +863,7 @@ const getHandout = (subjectId: number) => {
         <button onClick={() => setCurrentStep('subjects')} className="px-6 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">
           Back
         </button>
-        <button onClick={() => setCurrentStep('chat')} className="px-6 py-2 bg-black text-white rounded hover:bg-gray-800">
+        <button onClick={() => setCurrentStep('topics')} className="px-6 py-2 bg-black text-white rounded hover:bg-gray-800">
           Continue
         </button>
       </div>
@@ -615,8 +908,263 @@ const getHandout = (subjectId: number) => {
             {handoutStatus[subject.id] && (
               <p className="text-xs text-gray-600 mt-2">{handoutStatus[subject.id]}</p>
             )}
+            {isExtractingTopicsBySubject[subject.id] && (
+              <p className="text-xs text-blue-600 mt-1">Extracting topics...</p>
+            )}
           </div>
         ))}
+      </div>
+    </div>
+  );
+
+  const addTopicForSubject = (subjectId: number) => {
+    const newTopic = (newTopicBySubject[subjectId] || '').trim();
+    if (!newTopic) return;
+
+    setSubjectTopics((prev) => {
+      const existing = prev[subjectId] || {
+        subjectId,
+        subjectName: subjects.find((subject) => subject.id === subjectId)?.name || 'Subject',
+        topics: [],
+      };
+
+      const normalized = normalizeTopicName(newTopic);
+      if (existing.topics.some((topic) => normalizeTopicName(topic.name) === normalized)) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [subjectId]: {
+          ...existing,
+          topics: [
+            ...existing.topics,
+            {
+              id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+              name: newTopic,
+              status: 'do-now',
+              source: 'manual',
+            },
+          ],
+        },
+      };
+    });
+
+    setNewTopicBySubject((prev) => ({ ...prev, [subjectId]: '' }));
+  };
+
+  const setTopicStatus = (
+    subjectId: number,
+    topicId: string,
+    status: TopicProgressState,
+  ) => {
+    setSubjectTopics((prev) => {
+      const existing = prev[subjectId];
+      if (!existing) return prev;
+
+      return {
+        ...prev,
+        [subjectId]: {
+          ...existing,
+          topics: existing.topics.map((topic) =>
+            topic.id === topicId ? { ...topic, status } : topic,
+          ),
+        },
+      };
+    });
+  };
+
+  const renameTopic = (subjectId: number, topicId: string) => {
+    const subjectState = subjectTopics[subjectId];
+    const topic = subjectState?.topics.find((item) => item.id === topicId);
+    if (!topic) return;
+
+    const nextName = window.prompt('Rename topic', topic.name);
+    if (nextName === null) return;
+
+    const trimmed = nextName.trim();
+    if (!trimmed) return;
+
+    setSubjectTopics((prev) => {
+      const existing = prev[subjectId];
+      if (!existing) return prev;
+
+      const normalized = normalizeTopicName(trimmed);
+      const hasDuplicate = existing.topics.some(
+        (item) => item.id !== topicId && normalizeTopicName(item.name) === normalized,
+      );
+      if (hasDuplicate) return prev;
+
+      return {
+        ...prev,
+        [subjectId]: {
+          ...existing,
+          topics: existing.topics.map((item) =>
+            item.id === topicId ? { ...item, name: trimmed } : item,
+          ),
+        },
+      };
+    });
+  };
+
+  const deleteTopic = (subjectId: number, topicId: string) => {
+    setSubjectTopics((prev) => {
+      const existing = prev[subjectId];
+      if (!existing) return prev;
+
+      return {
+        ...prev,
+        [subjectId]: {
+          ...existing,
+          topics: existing.topics.filter((topic) => topic.id !== topicId),
+        },
+      };
+    });
+  };
+
+  const renderTopicsScreen = () => (
+    <div className="max-w-5xl mx-auto mt-10 p-6 bg-white border rounded shadow">
+      <div className="flex justify-between items-center mb-6">
+        <button
+          onClick={() => setCurrentStep('uploads')}
+          className="px-6 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+        >
+          Back
+        </button>
+        <button
+          onClick={() => setCurrentStep('chat')}
+          className="px-6 py-2 bg-black text-white rounded hover:bg-gray-800"
+        >
+          Continue
+        </button>
+      </div>
+
+      <h2 className="text-lg text-gray-700 mb-6">
+        Review topics for each subject. Mark every topic as Completed, Do This Week, or Later. Only Do This Week topics are sent to the AI scheduler.
+      </h2>
+
+      <div className="space-y-5">
+        {subjects.map((subject, index) => {
+          const topicState = subjectTopics[subject.id];
+          const topics = topicState?.topics || [];
+
+          return (
+            <div key={subject.id} className="border rounded p-4 bg-gray-50">
+              <div className="flex justify-between items-center mb-3">
+                <div>
+                  <p className="font-medium text-gray-800">{index + 1}. {subject.name}</p>
+                  <p className="text-xs text-gray-600">
+                    {topics.length > 0
+                      ? `${topics.filter((topic) => topic.status === 'do-now').length} set for this week of ${topics.length} topics`
+                      : 'No topics yet. Add manually or upload a handout.'}
+                  </p>
+                </div>
+                {getHandout(subject.id) ? (
+                  <span className="text-xs text-green-700">Handout linked</span>
+                ) : (
+                  <span className="text-xs text-orange-700">No handout</span>
+                )}
+              </div>
+
+              {topics.length > 0 ? (
+                <div className="space-y-2 mb-3">
+                  {topics.map((topic) => (
+                    <div key={topic.id} className="flex items-center justify-between bg-white border rounded p-2">
+                      <p
+                        className={`text-left flex-1 pr-3 ${
+                          topic.status === 'completed'
+                            ? 'text-gray-400 line-through'
+                            : topic.status === 'later'
+                              ? 'text-gray-500'
+                              : 'text-gray-800'
+                        }`}
+                      >
+                        {topic.name}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => setTopicStatus(subject.id, topic.id, 'completed')}
+                            className={`text-xs px-2 py-1 rounded ${
+                              topic.status === 'completed'
+                                ? 'bg-green-600 text-white'
+                                : 'bg-green-100 text-green-700'
+                            }`}
+                          >
+                            Completed
+                          </button>
+                          <button
+                            onClick={() => setTopicStatus(subject.id, topic.id, 'do-now')}
+                            className={`text-xs px-2 py-1 rounded ${
+                              topic.status === 'do-now'
+                                ? 'bg-blue-600 text-white'
+                                : 'bg-blue-100 text-blue-700'
+                            }`}
+                          >
+                            Do This Week
+                          </button>
+                          <button
+                            onClick={() => setTopicStatus(subject.id, topic.id, 'later')}
+                            className={`text-xs px-2 py-1 rounded ${
+                              topic.status === 'later'
+                                ? 'bg-gray-600 text-white'
+                                : 'bg-gray-100 text-gray-700'
+                            }`}
+                          >
+                            Later
+                          </button>
+                        </div>
+                        <button
+                          onClick={() => renameTopic(subject.id, topic.id)}
+                          className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                        >
+                          Rename
+                        </button>
+                        <button
+                          onClick={() => deleteTopic(subject.id, topic.id)}
+                          className="text-xs px-2 py-1 bg-red-500 text-white rounded hover:bg-red-600"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500 mb-3">
+                  No extracted topics yet. Add topics manually below.
+                </p>
+              )}
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newTopicBySubject[subject.id] || ''}
+                  onChange={(e) =>
+                    setNewTopicBySubject((prev) => ({
+                      ...prev,
+                      [subject.id]: e.target.value,
+                    }))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addTopicForSubject(subject.id);
+                    }
+                  }}
+                  placeholder="Add a topic"
+                  className="flex-1 border rounded p-2 text-black"
+                />
+                <button
+                  onClick={() => addTopicForSubject(subject.id)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -659,17 +1207,156 @@ const getHandout = (subjectId: number) => {
       message: string;
       type?: 'text' | 'timetable';
       timetable?: ChatTimetableCell[][];
+      timetableName?: string;
       accepted?: boolean;
     }[];
   }
+
+  const CHATS_STORAGE_KEY = 'chats';
+  const CURRENT_CHAT_ID_STORAGE_KEY = 'currentChatId';
 
   const [chats, setChats] = useState<Chats[]>([]);
   const [savedTimetables, setSavedTimetables] = useState<SavedTimetable[]>([]);
   const [isViewingSavedTimetable, setIsViewingSavedTimetable] = useState(false);
   const [openedSavedViewConfig, setOpenedSavedViewConfig] = useState<TimetableViewConfig | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [hasHydratedChats, setHasHydratedChats] = useState(false);
+  const [hasRestoredCurrentChatId, setHasRestoredCurrentChatId] = useState(false);
+  const [currentGeneratedTimetableName, setCurrentGeneratedTimetableName] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [sendTex, setSendTex] = useState('');
+
+  const normalizeStoredTimetableRows = (value: unknown): ChatTimetableCell[][] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+
+    const rows = value
+      .map((row) => {
+        if (!Array.isArray(row)) return [];
+
+        return row
+          .map((cell) => {
+            if (!cell || typeof cell !== 'object') return null;
+
+            const subject = typeof (cell as { subject?: unknown }).subject === 'string'
+              ? (cell as { subject: string }).subject
+              : '';
+            const topic = typeof (cell as { topic?: unknown }).topic === 'string'
+              ? (cell as { topic: string }).topic
+              : '';
+
+            if (!subject && !topic) return null;
+            return { subject, topic };
+          })
+          .filter((cell): cell is ChatTimetableCell => cell !== null);
+      })
+      .filter((row) => row.length > 0);
+
+    return rows.length > 0 ? rows : undefined;
+  };
+
+  const normalizeStoredChats = (value: unknown): Chats[] => {
+    if (!Array.isArray(value)) return [];
+
+    return value.map((chat, chatIndex) => {
+      const messages: Chats['messages'] = Array.isArray((chat as { messages?: unknown })?.messages)
+        ? ((chat as { messages: unknown[] }).messages)
+            .map((message, messageIndex): Chats['messages'][number] | null => {
+              const text = typeof (message as { message?: unknown })?.message === 'string'
+                ? (message as { message: string }).message
+                : '';
+              const timetable = normalizeStoredTimetableRows((message as { timetable?: unknown })?.timetable);
+              const normalizedType: 'text' | 'timetable' | undefined =
+                (message as { type?: unknown })?.type === 'timetable' && timetable
+                  ? 'timetable'
+                  : (message as { type?: unknown })?.type === 'text'
+                    ? 'text'
+                    : undefined;
+
+              if (!text && !timetable) return null;
+
+              return {
+                id:
+                  typeof (message as { id?: unknown })?.id === 'string' && (message as { id: string }).id.trim()
+                    ? (message as { id: string }).id
+                    : `${Date.now()}-${chatIndex}-${messageIndex}`,
+                role: ((message as { role?: unknown })?.role === 'ai' ? 'ai' : 'user') as 'user' | 'ai',
+                message: text,
+                type: normalizedType,
+                timetable,
+                timetableName:
+                  typeof (message as { timetableName?: unknown })?.timetableName === 'string'
+                    ? (message as { timetableName: string }).timetableName
+                    : undefined,
+                accepted: Boolean((message as { accepted?: unknown })?.accepted),
+              };
+            })
+            .filter((message): message is Chats['messages'][number] => message !== null)
+        : [];
+
+      const chatIdCandidate = (chat as { chat_id?: unknown })?.chat_id;
+      const chatNameCandidate = (chat as { chat_name?: unknown })?.chat_name;
+
+      return {
+        chat_id:
+          typeof chatIdCandidate === 'string' && chatIdCandidate.trim()
+            ? chatIdCandidate
+            : `${Date.now()}-${chatIndex}`,
+        chat_name:
+          typeof chatNameCandidate === 'string' && chatNameCandidate.trim()
+            ? chatNameCandidate
+            : `chat new ${chatIndex + 1}`,
+        messages,
+      };
+    });
+  };
+
+  const subjectPreviewPalettes = [
+    { bar: 'bg-emerald-500', chip: 'bg-emerald-100 text-emerald-700' },
+    { bar: 'bg-blue-500', chip: 'bg-blue-100 text-blue-700' },
+    { bar: 'bg-amber-500', chip: 'bg-amber-100 text-amber-700' },
+    { bar: 'bg-rose-500', chip: 'bg-rose-100 text-rose-700' },
+    { bar: 'bg-violet-500', chip: 'bg-violet-100 text-violet-700' },
+    { bar: 'bg-cyan-500', chip: 'bg-cyan-100 text-cyan-700' },
+  ];
+
+  const getSubjectPalette = (subjectName: string) => {
+    const hash = [...subjectName].reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    return subjectPreviewPalettes[hash % subjectPreviewPalettes.length];
+  };
+
+  const getSavedTimetablePreview = (saved: SavedTimetable) => {
+    const frequency = new Map<string, number>();
+    const topics: string[] = [];
+
+    saved.timetable.forEach((row) => {
+      row.forEach((cell) => {
+        const subject = cell.subject?.trim();
+        const topic = cell.topic?.trim();
+
+        if (subject && subject.toLowerCase() !== 'no slot') {
+          frequency.set(subject, (frequency.get(subject) || 0) + 1);
+        }
+
+        if (topic && topic.toLowerCase() !== 'outside working hours') {
+          topics.push(topic);
+        }
+      });
+    });
+
+    const subjectDistribution = Array.from(frequency.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([subject, count]) => ({ subject, count }));
+
+    const uniqueTopics = Array.from(new Set(topics)).slice(0, 5);
+    const maxCount = Math.max(1, ...subjectDistribution.map((item) => item.count));
+
+    return {
+      subjectDistribution,
+      uniqueTopics,
+      maxCount,
+    };
+  };
 
   const [isSending, setIsSending] = useState(false);
   const orderedWorkingDays = WEEK_DAYS.filter((day) => studyPreferences.workingDays.includes(day));
@@ -824,17 +1511,76 @@ const getHandout = (subjectId: number) => {
     localStorage.setItem('acceptedTimetables', JSON.stringify(savedTimetables));
   }, [savedTimetables]);
 
+  useEffect(() => {
+    const savedChats = localStorage.getItem(CHATS_STORAGE_KEY);
+
+    if (!savedChats) {
+      setHasHydratedChats(true);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(savedChats);
+      setChats(normalizeStoredChats(parsed));
+    } catch (error) {
+      console.error('Failed to parse chats:', error);
+    } finally {
+      setHasHydratedChats(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedChats) return;
+    localStorage.setItem(CHATS_STORAGE_KEY, JSON.stringify(chats));
+  }, [chats, hasHydratedChats]);
+
+  useEffect(() => {
+    if (!hasHydratedChats) return;
+
+    const savedCurrentChatId = localStorage.getItem(CURRENT_CHAT_ID_STORAGE_KEY);
+    if (savedCurrentChatId) {
+      setCurrentChatId(savedCurrentChatId);
+    }
+
+    setHasRestoredCurrentChatId(true);
+  }, [hasHydratedChats]);
+
+  useEffect(() => {
+    if (!hasHydratedChats) return;
+
+    if (chats.length === 0) {
+      setCurrentChatId(null);
+      return;
+    }
+
+    if (!currentChatId || !chats.some((chat) => chat.chat_id === currentChatId)) {
+      setCurrentChatId(chats[0].chat_id);
+    }
+  }, [chats, currentChatId, hasHydratedChats]);
+
+  useEffect(() => {
+    if (!hasRestoredCurrentChatId) return;
+
+    if (currentChatId) {
+      localStorage.setItem(CURRENT_CHAT_ID_STORAGE_KEY, currentChatId);
+      return;
+    }
+
+    localStorage.removeItem(CURRENT_CHAT_ID_STORAGE_KEY);
+  }, [currentChatId, hasRestoredCurrentChatId]);
+
   const saveAcceptedTimetable = (
     timetableRows: ChatTimetableCell[][],
     source: SavedTimetable['source'],
     viewConfig: TimetableViewConfig,
+    customName?: string,
   ) => {
     const signature = getTimetableSignature(timetableRows, viewConfig);
     const alreadyExists = savedTimetables.some((item) => item.signature === signature);
     if (alreadyExists) return false;
 
     const record: SavedTimetable = {
-      name: `new_tt_${savedTimetables.length + 1}`,
+      name: customName?.trim() || `new_tt_${savedTimetables.length + 1}`,
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       source,
       createdAt: new Date().toISOString(),
@@ -852,8 +1598,9 @@ const getHandout = (subjectId: number) => {
     chatId: string,
     messageId: string,
     timetableRows: ChatTimetableCell[][],
+    timetableName?: string,
   ) => {
-    saveAcceptedTimetable(timetableRows, 'chat', currentViewConfig);
+    saveAcceptedTimetable(timetableRows, 'chat', currentViewConfig, timetableName);
 
     setChats((prevChats) =>
       prevChats.map((chat) =>
@@ -883,7 +1630,12 @@ const getHandout = (subjectId: number) => {
     const activeViewConfig = isViewingSavedTimetable && openedSavedViewConfig
       ? openedSavedViewConfig
       : currentViewConfig;
-    saveAcceptedTimetable(toChatTimetableCells(timetable), 'timetable-screen', activeViewConfig);
+    saveAcceptedTimetable(
+      toChatTimetableCells(timetable),
+      'timetable-screen',
+      activeViewConfig,
+      currentGeneratedTimetableName || undefined,
+    );
   };
 
   const openSavedTimetable = (saved: SavedTimetable) => {
@@ -898,6 +1650,7 @@ const getHandout = (subjectId: number) => {
     setTimetable(reopened);
     setIsViewingSavedTimetable(true);
     setOpenedSavedViewConfig(saved.viewConfig);
+    setCurrentGeneratedTimetableName(saved.name);
     setCurrentStep('timetable');
   };
 
@@ -906,21 +1659,26 @@ const getHandout = (subjectId: number) => {
   };
 
   const createNewChat = () => {
-    const newChat: Chats = {
-      chat_id: Date.now().toString(),
-      chat_name: `chat new ${chats.length + 1}`,
-      messages: []
-    };
+    const chatId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-    setChats([newChat, ...chats]);
-    setCurrentChatId(newChat.chat_id);
+    setChats((prevChats) => {
+      const newChat: Chats = {
+        chat_id: chatId,
+        chat_name: `chat new ${prevChats.length + 1}`,
+        messages: []
+      };
+
+      return [newChat, ...prevChats];
+    });
+
+    setCurrentChatId(chatId);
   };
 
   useEffect(()=>{
-    if(currentStep === 'chat' && chats.length === 0){
+    if(currentStep === 'chat' && hasHydratedChats && chats.length === 0){
       createNewChat();
     }
-  },[currentStep, chats]);
+  },[currentStep, chats.length, hasHydratedChats]);
 
   const handleSend = async(e: React.MouseEvent<HTMLButtonElement>) => {
     if (!input.trim() || !currentChatId) return;
@@ -993,7 +1751,7 @@ const getHandout = (subjectId: number) => {
           score: subject.strength === null ? null : subject.strength + 1,
         })),
         studyPreferences,
-        handouts,
+        pendingTopics: buildPendingTopicsPayload(),
         conversation: conversationForApi,
         previousTimetable: latestTimetableFromChat ||
           timetable.map((row) =>
@@ -1009,6 +1767,7 @@ const getHandout = (subjectId: number) => {
     }
 
     const generatedRows = Array.isArray(data?.timetable) ? data.timetable : [];
+    const generatedName = typeof data?.name === 'string' ? data.name : null;
 
     if (
       generatedRows.length !== maxTimeSlots ||
@@ -1026,6 +1785,7 @@ const getHandout = (subjectId: number) => {
     );
 
     setTimetable(nextTimetable);
+    setCurrentGeneratedTimetableName(generatedName);
 
     const chatTimetable = nextTimetable.map((row: Cell[]) =>
       row.map((cell: Cell) => ({ subject: cell.subject, topic: cell.topic }))
@@ -1045,6 +1805,7 @@ const getHandout = (subjectId: number) => {
                   type: 'timetable',
                   message: 'Here is your generated timetable.',
                   timetable: chatTimetable,
+                  timetableName: generatedName || undefined,
                   accepted: false,
                 }
               ]
@@ -1069,21 +1830,27 @@ const getHandout = (subjectId: number) => {
   const renderChatScreen = () => (
     <div className="flex h-[calc(100vh-72px)]">
       {/* Sidebar */}
-      <div className='w-64 h-150 overflow-y-auto'>
+      <div className="w-64 h-full overflow-y-auto bg-slate-50/80 border-r border-slate-200 p-3">
         <button 
           onClick={createNewChat}
-          className="w-full py-2 bg-white border text-left px-4 rounded shadow-sm text-sm text-gray-700">
-          + new chat
+          className="w-full rounded-xl border border-emerald-600 bg-emerald-600 px-4 py-2.5 text-left text-sm font-semibold text-white shadow-sm transition-all duration-200 hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2"
+        >
+          + New Chat
         </button>
 
-        <div className="mt-4 space-y-1">
-          {chats.length !== 0 && chats.map((chat) => (
+        <div className="mt-4 space-y-1.5">
+          {chats.map(chat => (
             <button
               key={chat.chat_id}
               onClick={() => setCurrentChatId(chat.chat_id)}
-              className="w-full text-left px-4 py-2 text-sm text-gray-600 hover:bg-gray-300 rounded"
+              aria-current={currentChatId === chat.chat_id ? 'page' : undefined}
+              className={`w-full text-left px-3 py-2.5 rounded-xl border transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-1 ${
+                currentChatId === chat.chat_id
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-900 shadow-sm'
+                  : 'bg-white border-transparent text-slate-600 hover:bg-white hover:border-slate-200 hover:text-slate-800'
+              }`}
             >
-              {chat.chat_name}
+              <span className="block truncate text-sm font-medium">{chat.chat_name}</span>
             </button>
           ))}
     </div>
@@ -1180,7 +1947,7 @@ const getHandout = (subjectId: number) => {
               <button
                 onClick={() => {
                   if (!currentChatId || !msg.timetable) return;
-                  handleAcceptChatTimetable(currentChatId, msg.id, msg.timetable);
+                  handleAcceptChatTimetable(currentChatId, msg.id, msg.timetable, msg.timetableName);
                 }}
                 disabled={shouldDisableAccept}
                 className="px-3 py-1 text-xs rounded bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
@@ -1289,7 +2056,7 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
           score: subject.strength === null ? null : subject.strength + 1,
         })),
         studyPreferences,
-        handouts,
+        pendingTopics: buildPendingTopicsPayload(),
         previousTimetable: timetable.map((row) =>
           row.map((cell) => ({ subject: cell.subject, topic: cell.topic }))
         ),
@@ -1306,6 +2073,7 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
     }
 
     const generatedRows = Array.isArray(data?.timetable) ? data.timetable : [];
+    const generatedName = typeof data?.name === 'string' ? data.name : null;
 
     if (
       generatedRows.length !== maxTimeSlots ||
@@ -1323,6 +2091,7 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
         }))
       )
     );
+    setCurrentGeneratedTimetableName(generatedName);
 
     setIsViewingSavedTimetable(false);
     setOpenedSavedViewConfig(null);
@@ -1460,31 +2229,37 @@ const openHandout = (handout: Handout) => {
   );
 })}
   </div>
-  <h2 className='p-3 font-bold'>Subjects and Topics Completed :</h2>
-  <div className="flex items-center pt-3 space-x-2 space-y-4">
-    <div className="space-y-4">
-  {timetable.map((row, rowIndex) => (
-    <div key={rowIndex} className="flex gap-3 flex-wrap">
-      {row.map((cell, colIndex) => (
-        cell.completed && (
-          <div
-            key={colIndex}
-            className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 shadow-sm min-w-[120px]"
-          >
-            <p className="text-sm font-semibold text-green-800 truncate">
-              {cell.subject}
-            </p>
-            <p className="text-xs text-green-600 truncate">
-              {cell.topic}
-            </p>
+  <h2 className='p-3 font-bold'>Subjects and Topics Completed:</h2>
+  <div className="pt-3 space-y-3">
+    {subjects.map((subject, index) => {
+      const completedTopics = (subjectTopics[subject.id]?.topics || []).filter(
+        (topic) => topic.status === 'completed',
+      );
+
+      return (
+        <div key={subject.id} className="bg-gray-50 px-4 py-3 rounded-lg border">
+          <div className="flex items-center justify-between">
+            <p className="font-medium text-gray-800">{index + 1}. {subject.name}</p>
+            <span className="text-xs font-semibold text-green-700 bg-green-100 px-2 py-1 rounded">
+              {completedTopics.length} completed
+            </span>
           </div>
-        )
-      ))}
-    </div>
-  ))}
-</div>
-  
-</div>
+
+          {completedTopics.length > 0 ? (
+            <ul className="mt-2 space-y-1">
+              {completedTopics.map((topic) => (
+                <li key={topic.id} className="text-sm text-gray-700">
+                  - {topic.name}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-sm text-gray-500">No completed topics yet.</p>
+          )}
+        </div>
+      );
+    })}
+  </div>
 </div>
   )
 
@@ -1625,26 +2400,30 @@ useEffect(()=> {
       <main>
         {currentStep === 'subjects' && renderSubjectsScreen()}
         {currentStep === 'uploads' && renderUploadsScreen()}
+        {currentStep === 'topics' && renderTopicsScreen()}
         {currentStep === 'chat' && renderChatScreen()}
         {currentStep === 'timetable' && renderTimetableView()}
         {currentStep === 'data' && currentData()}
         
         {/* Placeholder for dashboard screen from wireframe */}
         {currentStep === 'dashboard' && (
-            <div className="max-w-6xl mx-auto mt-10 p-6">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="max-w-7xl mx-auto mt-10 p-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
                 <button
                   onClick={() => void generateTimetableWithAI()}
-                  className="w-48 h-48 border-2 border-dashed border-gray-300 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 transition text-gray-500"
+                  className="w-full max-w-sm h-52 border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 transition text-gray-500"
                 >
                   <span className="text-3xl mb-2">+</span>
                   <span className="text-sm">{isGeneratingTimetable ? 'Generating...' : 'Generate with AI'}</span>
                 </button>
 
                 {savedTimetables.map((saved) => (
+                      (() => {
+                        const preview = getSavedTimetablePreview(saved);
+                        return (
                       <div
                         key={saved.id}
-                        className="w-64 bg-white border border-gray-200 rounded-xl p-3 shadow-sm hover:shadow-md transition flex flex-col"
+                        className="w-full max-w-sm bg-white border border-gray-200 rounded-2xl p-4 shadow-sm hover:shadow-md transition flex flex-col"
                       >
                         {/* Header */}
                         <div className="flex justify-between items-start mb-2">
@@ -1681,24 +2460,50 @@ useEffect(()=> {
                         </div>
 
                         {/* Preview */}
-                        <div className="border border-gray-100 rounded-lg p-2 bg-gray-50 mb-3">
-                          <div className="grid grid-cols-3 gap-2">
-                            {saved.timetable
-                              .slice(0, 2)
-                              .flatMap((row) => row.slice(0, 3))
-                              .map((cell, index) => (
-                                <div
-                                  key={`${saved.id}-${index}`}
-                                  className="bg-white border border-gray-100 rounded-md p-1"
-                                >
-                                  <p className="text-xs font-medium text-gray-700 truncate">
-                                    {cell.subject}
-                                  </p>
-                                  <p className="text-[10px] text-gray-400 truncate">
-                                    {cell.topic}
-                                  </p>
-                                </div>
-                              ))}
+                        <div className="border border-gray-100 rounded-xl p-3 bg-gray-50 mb-3 space-y-3">
+                          <div>
+                            <p className="text-[11px] font-semibold text-gray-500 mb-2">Subject Distribution</p>
+                            <div className="space-y-2">
+                              {preview.subjectDistribution.length > 0 ? (
+                                preview.subjectDistribution.map((item) => {
+                                  const palette = getSubjectPalette(item.subject);
+                                  const widthPercent = Math.max(20, Math.round((item.count / preview.maxCount) * 100));
+
+                                  return (
+                                    <div key={`${saved.id}-${item.subject}`} className="space-y-1">
+                                      <div className="flex items-center justify-between text-[11px] text-gray-600">
+                                        <span className="truncate max-w-40">{item.subject}</span>
+                                        <span>{item.count} slots</span>
+                                      </div>
+                                      <div className="h-2 rounded-full bg-gray-200 overflow-hidden">
+                                        <div className={`${palette.bar} h-full rounded-full`} style={{ width: `${widthPercent}%` }} />
+                                      </div>
+                                    </div>
+                                  );
+                                })
+                              ) : (
+                                <p className="text-xs text-gray-400">No preview data</p>
+                              )}
+                            </div>
+                          </div>
+
+                          <div>
+                            <p className="text-[11px] font-semibold text-gray-500 mb-2">Key Topics</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {preview.uniqueTopics.length > 0 ? (
+                                preview.uniqueTopics.map((topic, index) => (
+                                  <span
+                                    key={`${saved.id}-topic-${index}`}
+                                    className="text-[10px] px-2 py-1 rounded-full bg-white border border-gray-200 text-gray-600 max-w-40 truncate"
+                                    title={topic}
+                                  >
+                                    {topic}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="text-xs text-gray-400">No topics available</span>
+                              )}
+                            </div>
                           </div>
                         </div>
 
@@ -1718,6 +2523,7 @@ useEffect(()=> {
                           </button>
                         </div>
                       </div>
+                    )})()
                     ))}
               </div>
             </div>

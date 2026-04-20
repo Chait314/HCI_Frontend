@@ -28,6 +28,7 @@ type TimetableRequestBody = {
   subjects?: SubjectInput[];
   studyPreferences?: StudyPreferencesInput;
   handouts?: HandoutInput[];
+  pendingTopics?: PendingTopicsInput[];
   prompt?: string;
   conversation?: Array<{
     role: "user" | "assistant";
@@ -54,7 +55,14 @@ type TimetableCell = {
 };
 
 type TimetablePayload = {
+  name?: string;
   timetable: TimetableCell[][];
+};
+
+type PendingTopicsInput = {
+  subjectId: number;
+  subjectName: string;
+  topics: string[];
 };
 
 type HandoutExtractionResult = {
@@ -375,7 +383,10 @@ function buildDaySlotStarts(
   const slotCount = Math.floor((end - start) / slotDuration);
   if (slotCount <= 0) return [];
 
-  return Array.from({ length: slotCount }, (_, index) => start + index * slotDuration);
+  return Array.from(
+    { length: slotCount },
+    (_, index) => start + index * slotDuration,
+  );
 }
 
 function normalizeTimetable(
@@ -401,12 +412,16 @@ function normalizeTimetable(
   };
 
   let timetable: unknown = null;
+  let name: string | undefined;
 
   if (Array.isArray(parsed)) {
     timetable = parsed;
   } else if (typeof parsed === "object") {
     const parsedObj = parsed as Record<string, unknown>;
     timetable = parsedObj.timetable;
+    if (typeof parsedObj.name === "string") {
+      name = parsedObj.name;
+    }
 
     if (!Array.isArray(timetable)) {
       const weekdayKeys = orderedWorkingDays.map((day) => day.toLowerCase());
@@ -459,7 +474,10 @@ function normalizeTimetable(
     }
 
     if (normalized.every((row) => row.length === expectedCols)) {
-      return { timetable: normalized };
+      return {
+        name,
+        timetable: normalized,
+      };
     }
   }
 
@@ -478,11 +496,49 @@ function normalizeTimetable(
     }
 
     if (transposed.every((row) => row.length === expectedCols)) {
-      return { timetable: transposed };
+      return {
+        name,
+        timetable: transposed,
+      };
     }
   }
 
   return null;
+}
+
+function toTitleCase(value: string): string {
+  return value
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function buildFallbackName(subjectHint: string): string {
+  const base = `${subjectHint} Weekly Plan`;
+  return base.length <= 25 ? base : base.slice(0, 25).trim();
+}
+
+function sanitizeTimetableName(
+  name: string | null | undefined,
+  subjectHint: string,
+): string {
+  const cleaned = (name || "")
+    .replace(/[^a-zA-Z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const titled = toTitleCase(cleaned);
+  const withHint = titled.toLowerCase().includes(subjectHint.toLowerCase())
+    ? titled
+    : `${subjectHint} ${titled}`.trim();
+
+  const shortened = withHint.slice(0, 25).trim();
+  if (!shortened) {
+    return buildFallbackName(subjectHint);
+  }
+
+  return toTitleCase(shortened);
 }
 
 export async function POST(req: Request) {
@@ -577,7 +633,8 @@ export async function POST(req: Request) {
       new Set(orderedWorkingDays.flatMap((day) => daySlotStarts[day] || [])),
     ).sort((a, b) => a - b);
     const fallbackStart = parseTimeToMinutes(DEFAULT_DAY_RANGE.start) ?? 8 * 60;
-    const rowSlotStarts = allSlotStarts.length > 0 ? allSlotStarts : [fallbackStart];
+    const rowSlotStarts =
+      allSlotStarts.length > 0 ? allSlotStarts : [fallbackStart];
     const expectedRows = rowSlotStarts.length;
     const expectedCols = Math.max(1, orderedWorkingDays.length);
 
@@ -600,6 +657,15 @@ export async function POST(req: Request) {
             typeof h?.fileName === "string" &&
             typeof h?.mimeType === "string" &&
             typeof h?.dataUrl === "string",
+        )
+      : [];
+
+    const pendingTopics = Array.isArray(body.pendingTopics)
+      ? body.pendingTopics.filter(
+          (entry): entry is PendingTopicsInput =>
+            typeof entry?.subjectId === "number" &&
+            typeof entry?.subjectName === "string" &&
+            Array.isArray(entry?.topics),
         )
       : [];
 
@@ -627,50 +693,88 @@ export async function POST(req: Request) {
       subjects.map((subject) => [subject.id, subject.name]),
     );
 
-    const extractedHandouts: string[] = [];
-    const filenameHints: string[] = [];
-    let totalChars = 0;
+    const hasPendingTopics = pendingTopics.some(
+      (entry) => entry.topics.length > 0,
+    );
 
-    for (const handout of handouts) {
-      if (totalChars >= MAX_TOTAL_HANDOUT_CHARS) break;
+    let handoutContext =
+      "No handout text could be extracted. Use subject strengths to balance the plan.";
+    let filenameHintContext = "No handout files were provided.";
 
-      const extracted = await extractHandoutData(handout);
-      const text = extracted.text.replace(/\s+/g, " ").trim();
+    if (hasPendingTopics) {
+      handoutContext = pendingTopics
+        .map((entry) => {
+          const normalizedTopics = entry.topics
+            .filter((topic) => typeof topic === "string")
+            .map((topic) => topic.trim())
+            .filter(Boolean);
 
-      const subjectName =
-        subjectNameById.get(handout.subjectId) || "Unknown subject";
+          if (normalizedTopics.length === 0) {
+            return `Subject: ${entry.subjectName} (ID: ${entry.subjectId})\nNo pending topics.`;
+          }
 
-      filenameHints.push(
-        `Subject: ${subjectName} | File: ${handout.fileName} | filename topic hints: ${buildFilenameTopicHint(handout.fileName)}`,
-      );
+          return `Subject: ${entry.subjectName} (ID: ${entry.subjectId})\nPending topics: ${normalizedTopics.join(" | ")}`;
+        })
+        .join("\n\n---\n\n");
 
-      logDebug(debugEnabled, "handout.extraction", {
-        fileName: handout.fileName,
-        subjectId: handout.subjectId,
-        mimeType: handout.mimeType,
-        bytes: extracted.bytes,
-        extractedChars: text.length,
-        error: extracted.error || null,
+      filenameHintContext =
+        "Pending topics were explicitly provided. Schedule from these pending topics and do not reintroduce already completed topics.";
+    } else {
+      const extractedHandouts: string[] = [];
+      const filenameHints: string[] = [];
+      let totalChars = 0;
+
+      for (const handout of handouts) {
+        if (totalChars >= MAX_TOTAL_HANDOUT_CHARS) break;
+
+        const extracted = await extractHandoutData(handout);
+        const text = extracted.text.replace(/\s+/g, " ").trim();
+
+        const subjectName =
+          subjectNameById.get(handout.subjectId) || "Unknown subject";
+
+        filenameHints.push(
+          `Subject: ${subjectName} | File: ${handout.fileName} | filename topic hints: ${buildFilenameTopicHint(handout.fileName)}`,
+        );
+
+        logDebug(debugEnabled, "handout.extraction", {
+          fileName: handout.fileName,
+          subjectId: handout.subjectId,
+          mimeType: handout.mimeType,
+          bytes: extracted.bytes,
+          extractedChars: text.length,
+          error: extracted.error || null,
+        });
+
+        if (!text) continue;
+
+        const remaining = MAX_TOTAL_HANDOUT_CHARS - totalChars;
+        const maxForThisHandout = Math.min(MAX_CHARS_PER_HANDOUT, remaining);
+        const excerpt = text.slice(0, maxForThisHandout);
+
+        totalChars += excerpt.length;
+        extractedHandouts.push(
+          `Subject: ${subjectName} (ID: ${handout.subjectId}) | File: ${handout.fileName}\n${excerpt}`,
+        );
+      }
+
+      logDebug(debugEnabled, "handout.summary", {
+        providedHandouts: handouts.length,
+        extractedHandouts: extractedHandouts.length,
+        extractedTotalChars: totalChars,
+        filenameHints: filenameHints.length,
       });
 
-      if (!text) continue;
+      handoutContext =
+        extractedHandouts.length > 0
+          ? extractedHandouts.join("\n\n---\n\n")
+          : "No handout text could be extracted. Use subject strengths to balance the plan.";
 
-      const remaining = MAX_TOTAL_HANDOUT_CHARS - totalChars;
-      const maxForThisHandout = Math.min(MAX_CHARS_PER_HANDOUT, remaining);
-      const excerpt = text.slice(0, maxForThisHandout);
-
-      totalChars += excerpt.length;
-      extractedHandouts.push(
-        `Subject: ${subjectName} (ID: ${handout.subjectId}) | File: ${handout.fileName}\n${excerpt}`,
-      );
+      filenameHintContext =
+        filenameHints.length > 0
+          ? filenameHints.join("\n")
+          : "No handout files were provided.";
     }
-
-    logDebug(debugEnabled, "handout.summary", {
-      providedHandouts: handouts.length,
-      extractedHandouts: extractedHandouts.length,
-      extractedTotalChars: totalChars,
-      filenameHints: filenameHints.length,
-    });
 
     const subjectContext = subjects
       .map((subject) => {
@@ -682,16 +786,6 @@ export async function POST(req: Request) {
         return `- ${subject.name}: strength ${scoreText}`;
       })
       .join("\n");
-
-    const handoutContext =
-      extractedHandouts.length > 0
-        ? extractedHandouts.join("\n\n---\n\n")
-        : "No handout text could be extracted. Use subject strengths to balance the plan.";
-
-    const filenameHintContext =
-      filenameHints.length > 0
-        ? filenameHints.join("\n")
-        : "No handout files were provided.";
 
     const conversationContext =
       conversation.length > 0
@@ -738,11 +832,6 @@ export async function POST(req: Request) {
           )}`,
       )
       .join("\n");
-
-
-   type TopicItem = { subject: string; topic: string };
-
-
     const studyPreferencesContext = [
       `Working days selected by user (Sun to Sat options): ${studyPreferences.workingDays.join(", ")}`,
       "Working hours per selected day:",
@@ -755,6 +844,9 @@ export async function POST(req: Request) {
       "Use these preferences to shape workload intensity and topic depth across timetable blocks.",
       "Do not include more than the allowed maximum number of topics in any single slot topic text.",
       "Do not schedule study entries beyond the user's end time for any day.",
+      hasPendingTopics
+        ? "Only use pending topics listed below. Do not schedule already completed topics."
+        : "Use extracted handout content and filename hints to infer topics.",
       'If a day does not have availability for a row time, return {"subject":"No Slot","topic":"Outside working hours"} for that cell.',
     ].join("\n");
 
@@ -763,7 +855,8 @@ export async function POST(req: Request) {
       "Handouts contain what should be studied in each subject. Scores are from 1 to 5 where 5 means strongest and 1 means weakest. " +
       "Give more time and foundational topics to weaker subjects and advanced revision to stronger subjects. " +
       "When the user asks to edit or change a timetable, treat the previous timetable as the baseline and modify it instead of creating an unrelated new plan. " +
-      'Return strict JSON only with this schema: {"timetable":[[{"subject":"...","topic":"..."}]]}. ' +
+      'Return strict JSON only with this schema: {"name":"...","timetable":[[{"subject":"...","topic":"..."}]]}. ' +
+      "The name must be Title Case, maximum 25 characters, include a subject hint, and contain only letters, numbers, and spaces. " +
       `It must be exactly ${expectedRows} rows and each row must contain exactly ${expectedCols} cells. ` +
       "Do not output markdown, code fences, explanations, tips, or a daily routine. " +
       "Do not use vague placeholder topics such as 'Advanced Topics', 'Foundational Topics', 'Intermediate Topics', or 'Revision' unless those exact phrases appear in handout excerpts.";
@@ -908,6 +1001,7 @@ export async function POST(req: Request) {
         });
 
         return NextResponse.json({
+          name: buildFallbackName(subjects[0]?.name || "Study"),
           timetable: previousTimetableNormalized.timetable,
           fallbackUsed: true,
         });
@@ -930,6 +1024,7 @@ export async function POST(req: Request) {
         });
 
         return NextResponse.json({
+          name: buildFallbackName(subjects[0]?.name || "Study"),
           timetable: previousTimetableNormalized.timetable,
           fallbackUsed: true,
         });
@@ -961,6 +1056,7 @@ export async function POST(req: Request) {
         });
 
         return NextResponse.json({
+          name: buildFallbackName(subjects[0]?.name || "Study"),
           timetable: previousTimetableNormalized.timetable,
           fallbackUsed: true,
         });
@@ -1008,7 +1104,26 @@ export async function POST(req: Request) {
       }),
     );
 
-    return NextResponse.json({ timetable: correctedTimetable });
+    const subjectCounts = new Map<string, number>();
+    correctedTimetable.forEach((row) => {
+      row.forEach((cell) => {
+        const subject = cell.subject.trim();
+        if (!subject || subject.toLowerCase() === "no slot") return;
+        subjectCounts.set(subject, (subjectCounts.get(subject) || 0) + 1);
+      });
+    });
+
+    const dominantSubject =
+      [...subjectCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ||
+      subjects[0]?.name ||
+      "Study";
+
+    const safeName = sanitizeTimetableName(normalized.name, dominantSubject);
+
+    return NextResponse.json({
+      name: safeName,
+      timetable: correctedTimetable,
+    });
   } catch (error) {
     console.error("Timetable generation error:", error);
     return NextResponse.json(
