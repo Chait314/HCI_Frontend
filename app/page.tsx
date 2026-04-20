@@ -1983,10 +1983,36 @@ const openHandout = (handout: Handout) => {
 })}
   </div>
   <h2 className='p-3 font-bold'>Subjects and Topics Completed:</h2>
-  <div className="flex items-center pt-3 space-x-2 space-y-4">
-    
-  
-</div>
+  <div className="pt-3 space-y-3">
+    {subjects.map((subject, index) => {
+      const completedTopics = (subjectTopics[subject.id]?.topics || []).filter(
+        (topic) => topic.status === 'completed',
+      );
+
+      return (
+        <div key={subject.id} className="bg-gray-50 px-4 py-3 rounded-lg border">
+          <div className="flex items-center justify-between">
+            <p className="font-medium text-gray-800">{index + 1}. {subject.name}</p>
+            <span className="text-xs font-semibold text-green-700 bg-green-100 px-2 py-1 rounded">
+              {completedTopics.length} completed
+            </span>
+          </div>
+
+          {completedTopics.length > 0 ? (
+            <ul className="mt-2 space-y-1">
+              {completedTopics.map((topic) => (
+                <li key={topic.id} className="text-sm text-gray-700">
+                  - {topic.name}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-sm text-gray-500">No completed topics yet.</p>
+          )}
+        </div>
+      );
+    })}
+  </div>
 </div>
   )
 
