@@ -1188,7 +1188,7 @@ const getHandout = (subjectId: number) => {
     source: 'chat' | 'timetable-screen';
     createdAt: string;
     signature: string;
-    timetable: ChatTimetableCell[][];
+    timetable: Cell[][];
     viewConfig: TimetableViewConfig;
     finished: boolean;
   };
@@ -1458,6 +1458,15 @@ const getHandout = (subjectId: number) => {
   const toChatTimetableCells = (rows: Cell[][]): ChatTimetableCell[][] =>
     rows.map((row) => row.map((cell) => ({ subject: cell.subject, topic: cell.topic })));
 
+  const toPendingTimetableCells = (rows: ChatTimetableCell[][]): Cell[][] =>
+    rows.map((row) =>
+      row.map((cell) => ({
+        subject: cell.subject,
+        topic: cell.topic,
+        status: 'pending',
+      })),
+    );
+
   const getTimetableSignature = (
     rows: ChatTimetableCell[][],
     viewConfig: TimetableViewConfig,
@@ -1482,8 +1491,8 @@ const getHandout = (subjectId: number) => {
 
       const normalized: SavedTimetable[] = parsed
         .map((item) => {
-          const rows = Array.isArray(item?.timetable) ? item.timetable : [];
-          const viewConfig = normalizeViewConfig(item?.viewConfig, rows);
+          const rows = normalizeStoredTimetable((item as { timetable?: unknown })?.timetable) || [];
+          const viewConfig = normalizeViewConfig(item?.viewConfig, toChatTimetableCells(rows));
 
           return {
             name: typeof item?.name === 'string' ? item.name : 'new_tt',
@@ -1493,13 +1502,13 @@ const getHandout = (subjectId: number) => {
             signature:
               typeof item?.signature === 'string' && item.signature
                 ? item.signature
-                : getTimetableSignature(rows, viewConfig),
+                : getTimetableSignature(toChatTimetableCells(rows), viewConfig),
             timetable: rows,
             viewConfig,
             finished: false
           };
         })
-        .filter((item) => item.signature && Array.isArray(item.timetable));
+        .filter((item) => item.signature && Array.isArray(item.timetable) && item.timetable.length > 0);
 
       setSavedTimetables(normalized);
     } catch (error) {
@@ -1570,12 +1579,12 @@ const getHandout = (subjectId: number) => {
   }, [currentChatId, hasRestoredCurrentChatId]);
 
   const saveAcceptedTimetable = (
-    timetableRows: ChatTimetableCell[][],
+    timetableRows: Cell[][],
     source: SavedTimetable['source'],
     viewConfig: TimetableViewConfig,
     customName?: string,
   ) => {
-    const signature = getTimetableSignature(timetableRows, viewConfig);
+    const signature = getTimetableSignature(toChatTimetableCells(timetableRows), viewConfig);
     const alreadyExists = savedTimetables.some((item) => item.signature === signature);
     if (alreadyExists) return false;
 
@@ -1600,7 +1609,7 @@ const getHandout = (subjectId: number) => {
     timetableRows: ChatTimetableCell[][],
     timetableName?: string,
   ) => {
-    saveAcceptedTimetable(timetableRows, 'chat', currentViewConfig, timetableName);
+    saveAcceptedTimetable(toPendingTimetableCells(timetableRows), 'chat', currentViewConfig, timetableName);
 
     setChats((prevChats) =>
       prevChats.map((chat) =>
@@ -1631,7 +1640,7 @@ const getHandout = (subjectId: number) => {
       ? openedSavedViewConfig
       : currentViewConfig;
     saveAcceptedTimetable(
-      toChatTimetableCells(timetable),
+      timetable,
       'timetable-screen',
       activeViewConfig,
       currentGeneratedTimetableName || undefined,
@@ -1639,15 +1648,10 @@ const getHandout = (subjectId: number) => {
   };
 
   const openSavedTimetable = (saved: SavedTimetable) => {
-    const reopened = saved.timetable.map((row) =>
-      row.map((cell) => ({
-        subject: cell.subject,
-        topic: cell.topic,
-        completed: false,
-      })),
-    );
+    const reopened = saved.timetable.map((row) => row.map((cell) => ({ ...cell })));
+    const { rows: finalizedRows } = autoFinalizeTimetable(reopened, saved.viewConfig);
 
-    setTimetable(reopened);
+    setTimetable(finalizedRows);
     setIsViewingSavedTimetable(true);
     setOpenedSavedViewConfig(saved.viewConfig);
     setCurrentGeneratedTimetableName(saved.name);
@@ -1780,7 +1784,7 @@ const getHandout = (subjectId: number) => {
       row.map((cell) => ({
         subject: cell.subject,
         topic: cell.topic,
-        completed: false,
+        status: 'pending' as SlotStatus,
       }))
     );
 
@@ -1998,7 +2002,116 @@ const getHandout = (subjectId: number) => {
   type Cell = {
       subject: string;
       topic: string;
-      completed: boolean;
+      status: SlotStatus;
+      finalizedAt?: string;
+  };
+
+  type SlotStatus = 'pending' | 'achieved' | 'not-completed';
+
+  const TIMETABLE_STORAGE_KEYS = ['Timetable', 'timetable'] as const;
+
+  const isSlotStatus = (value: unknown): value is SlotStatus =>
+    value === 'pending' || value === 'achieved' || value === 'not-completed';
+
+  const normalizeStoredTimetable = (value: unknown): Cell[][] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+
+    const rows = value
+      .map((row) => {
+        if (!Array.isArray(row)) return [];
+
+        return row
+          .map((cell) => {
+            if (!cell || typeof cell !== 'object') return null;
+
+            const subject = typeof (cell as { subject?: unknown }).subject === 'string'
+              ? (cell as { subject: string }).subject
+              : '';
+            const topic = typeof (cell as { topic?: unknown }).topic === 'string'
+              ? (cell as { topic: string }).topic
+              : '';
+
+            if (!subject && !topic) return null;
+
+            let status: SlotStatus = 'pending';
+            const statusCandidate = (cell as { status?: unknown }).status;
+
+            if (isSlotStatus(statusCandidate)) {
+              status = statusCandidate;
+            } else if (typeof (cell as { completed?: unknown }).completed === 'boolean') {
+              status = (cell as { completed: boolean }).completed ? 'achieved' : 'pending';
+            }
+
+            const finalizedAt =
+              typeof (cell as { finalizedAt?: unknown }).finalizedAt === 'string'
+                ? (cell as { finalizedAt: string }).finalizedAt
+                : undefined;
+
+            return {
+              subject,
+              topic,
+              status,
+              ...(finalizedAt ? { finalizedAt } : {}),
+            };
+          })
+          .filter((cell): cell is Cell => cell !== null);
+      })
+      .filter((row) => row.length > 0);
+
+    return rows.length > 0 ? rows : undefined;
+  };
+
+  const isSlotExpired = (
+    day: string,
+    rowStartMinutes: number,
+    slotDurationMinutes: number,
+    now = new Date(),
+  ) => {
+    const slotDayIndex = WEEK_DAYS.indexOf(day);
+    if (slotDayIndex === -1) return false;
+
+    const todayIndex = now.getDay();
+    if (slotDayIndex < todayIndex) return true;
+    if (slotDayIndex > todayIndex) return false;
+
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    return nowMinutes >= rowStartMinutes + slotDurationMinutes;
+  };
+
+  const autoFinalizeTimetable = (
+    rows: Cell[][],
+    viewConfig: TimetableViewConfig,
+    now = new Date(),
+  ) => {
+    let didChange = false;
+    const finalizedAt = now.toISOString();
+
+    const nextRows = rows.map((row, rowIndex) =>
+      row.map((cell, colIndex) => {
+        if (cell.status !== 'pending') return cell;
+
+        const day = viewConfig.days[colIndex];
+        const rowStart = viewConfig.rowSlotStarts[rowIndex];
+
+        if (!day || typeof rowStart !== 'number') return cell;
+
+        const hasTimeRange = viewConfig.daySlotStarts[day]?.includes(rowStart);
+        if (!hasTimeRange) return cell;
+
+        if (!isSlotExpired(day, rowStart, viewConfig.slotDurationMinutes, now)) {
+          return cell;
+        }
+
+        didChange = true;
+        return {
+          ...cell,
+          status: 'not-completed' as SlotStatus,
+          finalizedAt,
+        };
+      }),
+    );
+
+    return { rows: nextRows, didChange };
   };
 
   const [isGeneratingTimetable, setIsGeneratingTimetable] = useState(false);
@@ -2013,7 +2126,7 @@ const getHandout = (subjectId: number) => {
         Array.from({ length: columns }, (_, colIndex) => ({
           subject: 'General Study',
           topic: 'Revision',
-          completed: false,
+          status: 'pending' as SlotStatus,
         }))
       );
     }
@@ -2024,7 +2137,7 @@ const getHandout = (subjectId: number) => {
           return {
             subject: sub.name,
             topic: 'Revision',
-            completed: false,
+            status: 'pending' as SlotStatus,
           };
         })
     );
@@ -2033,6 +2146,33 @@ const getHandout = (subjectId: number) => {
 const [timetable, setTimetable] = useState<Cell[][]>(() => {
   return createFallbackTimetable();
 });
+
+useEffect(() => {
+  let loaded: Cell[][] | undefined;
+
+  for (const key of TIMETABLE_STORAGE_KEYS) {
+    const raw = localStorage.getItem(key);
+    if (!raw) continue;
+
+    try {
+      const parsed = JSON.parse(raw);
+      loaded = normalizeStoredTimetable(parsed);
+      if (loaded) break;
+    } catch (error) {
+      console.error(`Failed to parse ${key} from localStorage:`, error);
+    }
+  }
+
+  if (!loaded) return;
+
+  const { rows, didChange } = autoFinalizeTimetable(loaded, currentViewConfig);
+  setTimetable(rows);
+
+  if (didChange) {
+    localStorage.setItem('Timetable', JSON.stringify(rows));
+    localStorage.setItem('timetable', JSON.stringify(rows));
+  }
+}, []);
 
 const generateTimetableWithAI = async (userSuggestion?: string) => {
   if (subjects.length === 0) {
@@ -2087,7 +2227,7 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
         row.map((cell) => ({
           subject: cell.subject,
           topic: cell.topic,
-          completed: false,
+          status: 'pending' as SlotStatus,
         }))
       )
     );
@@ -2115,19 +2255,50 @@ const handleRegenerateWithSuggestion = async () => {
 };
 
   const toggleCell = (rowIndex: number, colIndex: number) => {
+    const day = activeTimetableDays[colIndex];
+    const rowStart = activeTimetableRowStarts[rowIndex];
+
+    if (!day || typeof rowStart !== 'number') return;
+
+    const hasTimeRange = activeTimetableViewConfig.daySlotStarts[day]?.includes(rowStart);
+    if (!hasTimeRange) return;
+
     setTimetable(prev => {
-    const updated = prev.map((row, i) =>
-      row.map((cell, j) =>
-        i === rowIndex && j === colIndex
-          ? { ...cell, completed: !cell.completed }
-          : cell
-      )
-    );
+      const targetCell = prev[rowIndex]?.[colIndex];
+      if (!targetCell) return prev;
 
-    localStorage.setItem("timetable", JSON.stringify(updated));
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const expired = isSlotExpired(day, rowStart, activeTimetableViewConfig.slotDurationMinutes, now);
 
-    return updated;
-  });
+      let nextCell = targetCell;
+
+      if (targetCell.status === 'pending' && expired) {
+        nextCell = {
+          ...targetCell,
+          status: 'not-completed',
+          finalizedAt: nowIso,
+        };
+      } else if (targetCell.status === 'pending' && !expired) {
+        nextCell = {
+          ...targetCell,
+          status: 'achieved',
+          finalizedAt: nowIso,
+        };
+      } else if (targetCell.status === 'achieved' && !expired) {
+        nextCell = {
+          ...targetCell,
+          status: 'pending',
+          finalizedAt: undefined,
+        };
+      }
+
+      if (nextCell === targetCell) return prev;
+
+      return prev.map((row, i) =>
+        row.map((cell, j) => (i === rowIndex && j === colIndex ? nextCell : cell)),
+      );
+    });
 };
 
 const isPdfHandout = (handout: Handout) => {
@@ -2272,11 +2443,39 @@ const openHandout = (handout: Handout) => {
     formatTimeRangeFromStart(start, activeTimetableViewConfig.slotDurationMinutes),
   );
 
+  useEffect(() => {
+    setTimetable((prev) => {
+      const { rows, didChange } = autoFinalizeTimetable(prev, activeTimetableViewConfig);
+      return didChange ? rows : prev;
+    });
+  }, [
+    activeTimetableViewConfig.days,
+    activeTimetableViewConfig.rowSlotStarts,
+    activeTimetableViewConfig.slotDurationMinutes,
+    activeTimetableViewConfig.daySlotStarts,
+  ]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setTimetable((prev) => {
+        const { rows, didChange } = autoFinalizeTimetable(prev, activeTimetableViewConfig);
+        return didChange ? rows : prev;
+      });
+    }, 60_000);
+
+    return () => window.clearInterval(interval);
+  }, [
+    activeTimetableViewConfig.days,
+    activeTimetableViewConfig.rowSlotStarts,
+    activeTimetableViewConfig.slotDurationMinutes,
+    activeTimetableViewConfig.daySlotStarts,
+  ]);
+
 
   const renderTimetableView = () => (
     <div className="max-w-4xl mx-auto mt-10 p-6 bg-white border rounded shadow">
       <div className="flex justify-between items-center mb-2">
-        <h2 className="text-xl font-medium text-gray-800">We're glad you liked it!</h2>
+        <h2 className="text-xl font-medium text-gray-800">We are glad you liked it!</h2>
         <div className="flex items-center gap-3">
           <button
             onClick={handleAcceptTimetableScreen}
@@ -2296,7 +2495,7 @@ const openHandout = (handout: Handout) => {
           )}
         </div>
       </div>
-      <p className="text-gray-600 mb-6">You can track your progress by marking green when you finished a task</p>
+      <p className="text-gray-600 mb-6">Mark slots as completed before their end time. Missed pending slots are auto-marked as not completed.</p>
       {timetableError && (
         <p className="text-sm text-red-600 mb-4">{timetableError}</p>
       )}
@@ -2344,14 +2543,23 @@ const openHandout = (handout: Handout) => {
         <td key={j} className="p-3 border-r">
           <div
             onClick={() => toggleCell(i, j, )}
-            className={`w-full min-h-20 rounded text-xs p-2 cursor-pointer transition ${
-              cell.completed
-                ? 'bg-green-200'
-                : 'bg-gray-100 hover:bg-gray-200'
+            className={`w-full min-h-20 rounded text-xs p-2 transition ${
+              cell.status === 'achieved'
+                ? 'bg-green-200 cursor-pointer'
+                : cell.status === 'not-completed'
+                  ? 'bg-red-200 cursor-not-allowed'
+                  : 'bg-gray-100 hover:bg-gray-200 cursor-pointer'
             }`}
           >
             <p className="font-medium leading-tight whitespace-normal break-words">{cell.subject}</p>
             <p className="text-[10px] leading-tight mt-1 whitespace-normal break-words">{cell.topic}</p>
+            <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-gray-700">
+              {cell.status === 'achieved'
+                ? 'Completed'
+                : cell.status === 'not-completed'
+                  ? 'Not completed'
+                  : 'Pending'}
+            </p>
           </div>
         </td>
       );
@@ -2389,6 +2597,10 @@ const openHandout = (handout: Handout) => {
 useEffect(()=> {
   localStorage.setItem(
     "Timetable",
+    JSON.stringify(timetable)
+  );
+  localStorage.setItem(
+    "timetable",
     JSON.stringify(timetable)
   );
 },[timetable]);
