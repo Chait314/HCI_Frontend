@@ -1182,6 +1182,7 @@ const getHandout = (subjectId: number) => {
       message: string;
       type?: 'text' | 'timetable';
       timetable?: ChatTimetableCell[][];
+      timetableName?: string;
       accepted?: boolean;
     }[];
   }
@@ -1191,8 +1192,57 @@ const getHandout = (subjectId: number) => {
   const [isViewingSavedTimetable, setIsViewingSavedTimetable] = useState(false);
   const [openedSavedViewConfig, setOpenedSavedViewConfig] = useState<TimetableViewConfig | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [currentGeneratedTimetableName, setCurrentGeneratedTimetableName] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [sendTex, setSendTex] = useState('');
+
+  const subjectPreviewPalettes = [
+    { bar: 'bg-emerald-500', chip: 'bg-emerald-100 text-emerald-700' },
+    { bar: 'bg-blue-500', chip: 'bg-blue-100 text-blue-700' },
+    { bar: 'bg-amber-500', chip: 'bg-amber-100 text-amber-700' },
+    { bar: 'bg-rose-500', chip: 'bg-rose-100 text-rose-700' },
+    { bar: 'bg-violet-500', chip: 'bg-violet-100 text-violet-700' },
+    { bar: 'bg-cyan-500', chip: 'bg-cyan-100 text-cyan-700' },
+  ];
+
+  const getSubjectPalette = (subjectName: string) => {
+    const hash = [...subjectName].reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    return subjectPreviewPalettes[hash % subjectPreviewPalettes.length];
+  };
+
+  const getSavedTimetablePreview = (saved: SavedTimetable) => {
+    const frequency = new Map<string, number>();
+    const topics: string[] = [];
+
+    saved.timetable.forEach((row) => {
+      row.forEach((cell) => {
+        const subject = cell.subject?.trim();
+        const topic = cell.topic?.trim();
+
+        if (subject && subject.toLowerCase() !== 'no slot') {
+          frequency.set(subject, (frequency.get(subject) || 0) + 1);
+        }
+
+        if (topic && topic.toLowerCase() !== 'outside working hours') {
+          topics.push(topic);
+        }
+      });
+    });
+
+    const subjectDistribution = Array.from(frequency.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([subject, count]) => ({ subject, count }));
+
+    const uniqueTopics = Array.from(new Set(topics)).slice(0, 5);
+    const maxCount = Math.max(1, ...subjectDistribution.map((item) => item.count));
+
+    return {
+      subjectDistribution,
+      uniqueTopics,
+      maxCount,
+    };
+  };
 
   const [isSending, setIsSending] = useState(false);
   const orderedWorkingDays = WEEK_DAYS.filter((day) => studyPreferences.workingDays.includes(day));
@@ -1351,13 +1401,14 @@ const getHandout = (subjectId: number) => {
     timetableRows: ChatTimetableCell[][],
     source: SavedTimetable['source'],
     viewConfig: TimetableViewConfig,
+    customName?: string,
   ) => {
     const signature = getTimetableSignature(timetableRows, viewConfig);
     const alreadyExists = savedTimetables.some((item) => item.signature === signature);
     if (alreadyExists) return false;
 
     const record: SavedTimetable = {
-      name: `new_tt_${savedTimetables.length + 1}`,
+      name: customName?.trim() || `new_tt_${savedTimetables.length + 1}`,
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       source,
       createdAt: new Date().toISOString(),
@@ -1375,8 +1426,9 @@ const getHandout = (subjectId: number) => {
     chatId: string,
     messageId: string,
     timetableRows: ChatTimetableCell[][],
+    timetableName?: string,
   ) => {
-    saveAcceptedTimetable(timetableRows, 'chat', currentViewConfig);
+    saveAcceptedTimetable(timetableRows, 'chat', currentViewConfig, timetableName);
 
     setChats((prevChats) =>
       prevChats.map((chat) =>
@@ -1406,7 +1458,12 @@ const getHandout = (subjectId: number) => {
     const activeViewConfig = isViewingSavedTimetable && openedSavedViewConfig
       ? openedSavedViewConfig
       : currentViewConfig;
-    saveAcceptedTimetable(toChatTimetableCells(timetable), 'timetable-screen', activeViewConfig);
+    saveAcceptedTimetable(
+      toChatTimetableCells(timetable),
+      'timetable-screen',
+      activeViewConfig,
+      currentGeneratedTimetableName || undefined,
+    );
   };
 
   const openSavedTimetable = (saved: SavedTimetable) => {
@@ -1421,6 +1478,7 @@ const getHandout = (subjectId: number) => {
     setTimetable(reopened);
     setIsViewingSavedTimetable(true);
     setOpenedSavedViewConfig(saved.viewConfig);
+    setCurrentGeneratedTimetableName(saved.name);
     setCurrentStep('timetable');
   };
 
@@ -1532,6 +1590,7 @@ const getHandout = (subjectId: number) => {
     }
 
     const generatedRows = Array.isArray(data?.timetable) ? data.timetable : [];
+    const generatedName = typeof data?.name === 'string' ? data.name : null;
 
     if (
       generatedRows.length !== maxTimeSlots ||
@@ -1549,6 +1608,7 @@ const getHandout = (subjectId: number) => {
     );
 
     setTimetable(nextTimetable);
+    setCurrentGeneratedTimetableName(generatedName);
 
     const chatTimetable = nextTimetable.map((row: Cell[]) =>
       row.map((cell: Cell) => ({ subject: cell.subject, topic: cell.topic }))
@@ -1568,6 +1628,7 @@ const getHandout = (subjectId: number) => {
                   type: 'timetable',
                   message: 'Here is your generated timetable.',
                   timetable: chatTimetable,
+                  timetableName: generatedName || undefined,
                   accepted: false,
                 }
               ]
@@ -1702,7 +1763,7 @@ const getHandout = (subjectId: number) => {
               <button
                 onClick={() => {
                   if (!currentChatId || !msg.timetable) return;
-                  handleAcceptChatTimetable(currentChatId, msg.id, msg.timetable);
+                  handleAcceptChatTimetable(currentChatId, msg.id, msg.timetable, msg.timetableName);
                 }}
                 disabled={shouldDisableAccept}
                 className="px-3 py-1 text-xs rounded bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
@@ -1828,6 +1889,7 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
     }
 
     const generatedRows = Array.isArray(data?.timetable) ? data.timetable : [];
+    const generatedName = typeof data?.name === 'string' ? data.name : null;
 
     if (
       generatedRows.length !== maxTimeSlots ||
@@ -1845,6 +1907,7 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
         }))
       )
     );
+    setCurrentGeneratedTimetableName(generatedName);
 
     setIsViewingSavedTimetable(false);
     setOpenedSavedViewConfig(null);
@@ -2160,20 +2223,23 @@ useEffect(()=> {
         
         {/* Placeholder for dashboard screen from wireframe */}
         {currentStep === 'dashboard' && (
-            <div className="max-w-6xl mx-auto mt-10 p-6">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="max-w-7xl mx-auto mt-10 p-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
                 <button
                   onClick={() => void generateTimetableWithAI()}
-                  className="w-48 h-48 border-2 border-dashed border-gray-300 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 transition text-gray-500"
+                  className="w-full max-w-sm h-52 border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 transition text-gray-500"
                 >
                   <span className="text-3xl mb-2">+</span>
                   <span className="text-sm">{isGeneratingTimetable ? 'Generating...' : 'Generate with AI'}</span>
                 </button>
 
                 {savedTimetables.map((saved) => (
+                      (() => {
+                        const preview = getSavedTimetablePreview(saved);
+                        return (
                       <div
                         key={saved.id}
-                        className="w-64 bg-white border border-gray-200 rounded-xl p-3 shadow-sm hover:shadow-md transition flex flex-col"
+                        className="w-full max-w-sm bg-white border border-gray-200 rounded-2xl p-4 shadow-sm hover:shadow-md transition flex flex-col"
                       >
                         {/* Header */}
                         <div className="flex justify-between items-start mb-2">
@@ -2210,24 +2276,50 @@ useEffect(()=> {
                         </div>
 
                         {/* Preview */}
-                        <div className="border border-gray-100 rounded-lg p-2 bg-gray-50 mb-3">
-                          <div className="grid grid-cols-3 gap-2">
-                            {saved.timetable
-                              .slice(0, 2)
-                              .flatMap((row) => row.slice(0, 3))
-                              .map((cell, index) => (
-                                <div
-                                  key={`${saved.id}-${index}`}
-                                  className="bg-white border border-gray-100 rounded-md p-1"
-                                >
-                                  <p className="text-xs font-medium text-gray-700 truncate">
-                                    {cell.subject}
-                                  </p>
-                                  <p className="text-[10px] text-gray-400 truncate">
-                                    {cell.topic}
-                                  </p>
-                                </div>
-                              ))}
+                        <div className="border border-gray-100 rounded-xl p-3 bg-gray-50 mb-3 space-y-3">
+                          <div>
+                            <p className="text-[11px] font-semibold text-gray-500 mb-2">Subject Distribution</p>
+                            <div className="space-y-2">
+                              {preview.subjectDistribution.length > 0 ? (
+                                preview.subjectDistribution.map((item) => {
+                                  const palette = getSubjectPalette(item.subject);
+                                  const widthPercent = Math.max(20, Math.round((item.count / preview.maxCount) * 100));
+
+                                  return (
+                                    <div key={`${saved.id}-${item.subject}`} className="space-y-1">
+                                      <div className="flex items-center justify-between text-[11px] text-gray-600">
+                                        <span className="truncate max-w-40">{item.subject}</span>
+                                        <span>{item.count} slots</span>
+                                      </div>
+                                      <div className="h-2 rounded-full bg-gray-200 overflow-hidden">
+                                        <div className={`${palette.bar} h-full rounded-full`} style={{ width: `${widthPercent}%` }} />
+                                      </div>
+                                    </div>
+                                  );
+                                })
+                              ) : (
+                                <p className="text-xs text-gray-400">No preview data</p>
+                              )}
+                            </div>
+                          </div>
+
+                          <div>
+                            <p className="text-[11px] font-semibold text-gray-500 mb-2">Key Topics</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {preview.uniqueTopics.length > 0 ? (
+                                preview.uniqueTopics.map((topic, index) => (
+                                  <span
+                                    key={`${saved.id}-topic-${index}`}
+                                    className="text-[10px] px-2 py-1 rounded-full bg-white border border-gray-200 text-gray-600 max-w-40 truncate"
+                                    title={topic}
+                                  >
+                                    {topic}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="text-xs text-gray-400">No topics available</span>
+                              )}
+                            </div>
                           </div>
                         </div>
 
@@ -2247,6 +2339,7 @@ useEffect(()=> {
                           </button>
                         </div>
                       </div>
+                    )})()
                     ))}
               </div>
             </div>
