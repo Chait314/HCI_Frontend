@@ -2,12 +2,28 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-type Step = 'subjects' | 'uploads' | 'chat' | 'timetable' | 'dashboard' | 'custom' | 'data'
+type Step = 'subjects' | 'uploads' | 'topics' | 'chat' | 'timetable' | 'dashboard' | 'custom' | 'data'
 
 interface Subject {
   id: number;
   name: string;
   strength: number | null;
+}
+
+type TopicSource = 'llm' | 'manual';
+type TopicProgressState = 'completed' | 'do-now' | 'later';
+
+interface SubjectTopic {
+  id: string;
+  name: string;
+  status: TopicProgressState;
+  source: TopicSource;
+}
+
+interface SubjectTopicState {
+  subjectId: number;
+  subjectName: string;
+  topics: SubjectTopic[];
 }
 
 type StudyPreferences = {
@@ -232,6 +248,9 @@ useEffect(() => {
 
   const [newSubjectName, setNewSubjectName] = useState('');
   const [isAdding, setIsAdding] = useState(false);
+  const [subjectTopics, setSubjectTopics] = useState<Record<number, SubjectTopicState>>({});
+  const [newTopicBySubject, setNewTopicBySubject] = useState<Record<number, string>>({});
+  const [isExtractingTopicsBySubject, setIsExtractingTopicsBySubject] = useState<Record<number, boolean>>({});
 
   const strengthColors = [
     'bg-red-500 hover:bg-red-600', 
@@ -242,6 +261,239 @@ useEffect(() => {
   ];
 
   const strengthNumbers = [1,2,3,4,5]
+
+  const normalizeTopicName = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
+
+  const dedupeTopicNames = (topicNames: string[]) => {
+    const seen = new Set<string>();
+
+    return topicNames
+      .map((topic) => topic.trim().replace(/\s+/g, ' '))
+      .filter((topic) => topic.length > 0)
+      .filter((topic) => {
+        const normalized = normalizeTopicName(topic);
+        if (!normalized || seen.has(normalized)) return false;
+        seen.add(normalized);
+        return true;
+      });
+  };
+
+  const buildPendingTopicsPayload = () =>
+    subjects
+      .map((subject) => {
+        const subjectState = subjectTopics[subject.id];
+        const topics = (subjectState?.topics || [])
+          .filter((topic) => topic.status === 'do-now')
+          .map((topic) => topic.name.trim())
+          .filter((topic) => topic.length > 0);
+
+        return {
+          subjectId: subject.id,
+          subjectName: subject.name,
+          topics,
+        };
+      })
+      .filter((subjectEntry) => subjectEntry.topics.length > 0);
+
+  const mergeExtractedTopics = (
+    subjectId: number,
+    subjectName: string,
+    extractedTopicNames: string[],
+  ) => {
+    setSubjectTopics((prev) => {
+      const previous = prev[subjectId];
+      const previousTopics = previous?.topics || [];
+      const statusMap = new Map(
+        previousTopics.map((topic) => [normalizeTopicName(topic.name), topic.status]),
+      );
+
+      const dedupedExtracted = dedupeTopicNames(extractedTopicNames);
+      const extractedTopics: SubjectTopic[] = dedupedExtracted.map((topicName) => ({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        name: topicName,
+        status: statusMap.get(normalizeTopicName(topicName)) || 'do-now',
+        source: 'llm',
+      }));
+
+      const extractedSet = new Set(dedupedExtracted.map((topic) => normalizeTopicName(topic)));
+      const manualTopics = previousTopics.filter(
+        (topic) => topic.source === 'manual' && !extractedSet.has(normalizeTopicName(topic.name)),
+      );
+
+      return {
+        ...prev,
+        [subjectId]: {
+          subjectId,
+          subjectName,
+          topics: [...manualTopics, ...extractedTopics],
+        },
+      };
+    });
+  };
+
+  const removeExtractedTopicsForSubject = (subjectId: number) => {
+    setSubjectTopics((prev) => {
+      const existing = prev[subjectId];
+      if (!existing) return prev;
+
+      const manualOnly = existing.topics.filter((topic) => topic.source === 'manual');
+
+      return {
+        ...prev,
+        [subjectId]: {
+          ...existing,
+          topics: manualOnly,
+        },
+      };
+    });
+  };
+
+  const extractTopicsForHandout = async (
+    subjectId: number,
+    subjectName: string,
+    handout: Handout,
+  ) => {
+    setIsExtractingTopicsBySubject((prev) => ({ ...prev, [subjectId]: true }));
+    setHandoutStatus((prev) => ({ ...prev, [subjectId]: 'Extracting topics from handout...' }));
+
+    try {
+      const response = await fetch('/api/topics/extract', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          subject: {
+            id: subjectId,
+            name: subjectName,
+          },
+          handout,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || 'Topic extraction failed.');
+      }
+
+      const extractedTopics = Array.isArray(data?.topics)
+        ? data.topics.filter((topic: unknown): topic is string => typeof topic === 'string')
+        : [];
+
+      mergeExtractedTopics(subjectId, subjectName, extractedTopics);
+
+      setHandoutStatus((prev) => ({
+        ...prev,
+        [subjectId]:
+          extractedTopics.length > 0
+            ? `Handout saved. ${extractedTopics.length} topics extracted.`
+            : 'Handout saved. No topics extracted, you can add topics manually in Topic Review.',
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Topic extraction failed.';
+      setHandoutStatus((prev) => ({
+        ...prev,
+        [subjectId]: `Handout saved, but topic extraction failed. ${message}`,
+      }));
+    } finally {
+      setIsExtractingTopicsBySubject((prev) => ({ ...prev, [subjectId]: false }));
+    }
+  };
+
+  useEffect(() => {
+    const savedSubjectTopics = localStorage.getItem('subjectTopics');
+    if (!savedSubjectTopics) return;
+
+    try {
+      const parsed = JSON.parse(savedSubjectTopics);
+      if (!parsed || typeof parsed !== 'object') return;
+
+      const normalizedEntries = Object.entries(parsed as Record<string, unknown>)
+        .map(([subjectKey, value]) => {
+          const subjectId = Number(subjectKey);
+          if (Number.isNaN(subjectId) || !value || typeof value !== 'object') return null;
+
+          const entry = value as {
+            subjectId?: unknown;
+            subjectName?: unknown;
+            topics?: unknown;
+          };
+
+          const subjectName = typeof entry.subjectName === 'string' ? entry.subjectName : '';
+          const topics = Array.isArray(entry.topics)
+            ? entry.topics
+                .map((topic) => {
+                  if (!topic || typeof topic !== 'object') return null;
+
+                  const typedTopic = topic as {
+                    id?: unknown;
+                    name?: unknown;
+                    status?: unknown;
+                    completed?: unknown;
+                    source?: unknown;
+                  };
+
+                  if (typeof typedTopic.name !== 'string') return null;
+
+                  const status: TopicProgressState =
+                    typedTopic.status === 'completed' ||
+                    typedTopic.status === 'do-now' ||
+                    typedTopic.status === 'later'
+                      ? typedTopic.status
+                      : Boolean(typedTopic.completed)
+                        ? 'completed'
+                        : 'do-now';
+
+                  return {
+                    id:
+                      typeof typedTopic.id === 'string'
+                        ? typedTopic.id
+                        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+                    name: typedTopic.name,
+                    status,
+                    source: typedTopic.source === 'manual' ? 'manual' : 'llm',
+                  } satisfies SubjectTopic;
+                })
+                .filter((topic): topic is SubjectTopic => topic !== null)
+            : [];
+
+          return [
+            subjectId,
+            {
+              subjectId,
+              subjectName,
+              topics,
+            } satisfies SubjectTopicState,
+          ] as const;
+        })
+        .filter((entry): entry is readonly [number, SubjectTopicState] => entry !== null);
+
+      setSubjectTopics(Object.fromEntries(normalizedEntries));
+    } catch (error) {
+      console.error('Failed to parse subjectTopics from localStorage:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('subjectTopics', JSON.stringify(subjectTopics));
+  }, [subjectTopics]);
+
+  useEffect(() => {
+    setSubjectTopics((prev) => {
+      const next: Record<number, SubjectTopicState> = {};
+
+      subjects.forEach((subject) => {
+        const existing = prev[subject.id];
+        next[subject.id] = {
+          subjectId: subject.id,
+          subjectName: subject.name,
+          topics: existing?.topics || [],
+        };
+      });
+
+      return next;
+    });
+  }, [subjects]);
 
 
 
@@ -274,6 +526,13 @@ useEffect(() => {
           className={`px-4 py-2 text-sm font-semibold hover:cursor-pointer rounded ${currentStep === 'uploads' ? 'bg-white text-green-800' : 'bg-green-700 text-white hover:bg-green-600'}`}
         >
           Upload your Handouts
+        </button>
+
+        <button 
+          onClick={() => setCurrentStep('topics')}
+          className={`px-4 py-2 text-sm font-semibold hover:cursor-pointer rounded ${currentStep === 'topics' ? 'bg-white text-green-800' : 'bg-green-700 text-white hover:bg-green-600'}`}
+        >
+          Topic Review
         </button>
 
         <button 
@@ -524,17 +783,14 @@ useEffect(() => {
     return;
   }
 
-  const existingHandout = handouts.find((h) => h.subjectId === subjectid);
-  if (existingHandout) {
-    setHandoutStatus((prev) => ({
-      ...prev,
-      [subjectid]: 'A handout already exists for this subject. Delete it first to upload a new one.',
-    }));
-    return;
-  }
-
   try {
     const dataUrl = await fileToDataUrl(file);
+    const matchedSubject = subjects.find((subject) => subject.id === subjectid);
+
+    if (!matchedSubject) {
+      setHandoutStatus((prev) => ({ ...prev, [subjectid]: 'Subject not found.' }));
+      return;
+    }
 
     const newHandout: Handout = {
       subjectId: subjectid,
@@ -547,8 +803,15 @@ useEffect(() => {
       dataUrl,
     };
 
-    setHandouts((prev) => [...prev, newHandout]);
-    setHandoutStatus((prev) => ({ ...prev, [subjectid]: 'Handout saved successfully.' }));
+    setHandouts((prev) => {
+      const withoutSubjectHandout = prev.filter((h) => h.subjectId !== subjectid);
+      return [...withoutSubjectHandout, newHandout];
+    });
+    setHandoutStatus((prev) => ({
+      ...prev,
+      [subjectid]: 'Handout saved. Extracting topics...',
+    }));
+    await extractTopicsForHandout(subjectid, matchedSubject.name, newHandout);
   } catch (error) {
     console.error(error);
     setHandoutStatus((prev) => ({ ...prev, [subjectid]: 'Could not save this file.' }));
@@ -558,6 +821,7 @@ useEffect(() => {
 const deleteHandout = (subjectId: number) => {
   setHandouts((prev) => prev.filter((h) => h.subjectId !== subjectId));
   setHandoutStatus((prev) => ({ ...prev, [subjectId]: 'Handout deleted.' }));
+  removeExtractedTopicsForSubject(subjectId);
 };
 
 const getFileName = (subjectId: number) => {
@@ -574,7 +838,7 @@ const getHandout = (subjectId: number) => {
         <button onClick={() => setCurrentStep('subjects')} className="px-6 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">
           Back
         </button>
-        <button onClick={() => setCurrentStep('chat')} className="px-6 py-2 bg-black text-white rounded hover:bg-gray-800">
+        <button onClick={() => setCurrentStep('topics')} className="px-6 py-2 bg-black text-white rounded hover:bg-gray-800">
           Continue
         </button>
       </div>
@@ -619,8 +883,263 @@ const getHandout = (subjectId: number) => {
             {handoutStatus[subject.id] && (
               <p className="text-xs text-gray-600 mt-2">{handoutStatus[subject.id]}</p>
             )}
+            {isExtractingTopicsBySubject[subject.id] && (
+              <p className="text-xs text-blue-600 mt-1">Extracting topics...</p>
+            )}
           </div>
         ))}
+      </div>
+    </div>
+  );
+
+  const addTopicForSubject = (subjectId: number) => {
+    const newTopic = (newTopicBySubject[subjectId] || '').trim();
+    if (!newTopic) return;
+
+    setSubjectTopics((prev) => {
+      const existing = prev[subjectId] || {
+        subjectId,
+        subjectName: subjects.find((subject) => subject.id === subjectId)?.name || 'Subject',
+        topics: [],
+      };
+
+      const normalized = normalizeTopicName(newTopic);
+      if (existing.topics.some((topic) => normalizeTopicName(topic.name) === normalized)) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [subjectId]: {
+          ...existing,
+          topics: [
+            ...existing.topics,
+            {
+              id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+              name: newTopic,
+              status: 'do-now',
+              source: 'manual',
+            },
+          ],
+        },
+      };
+    });
+
+    setNewTopicBySubject((prev) => ({ ...prev, [subjectId]: '' }));
+  };
+
+  const setTopicStatus = (
+    subjectId: number,
+    topicId: string,
+    status: TopicProgressState,
+  ) => {
+    setSubjectTopics((prev) => {
+      const existing = prev[subjectId];
+      if (!existing) return prev;
+
+      return {
+        ...prev,
+        [subjectId]: {
+          ...existing,
+          topics: existing.topics.map((topic) =>
+            topic.id === topicId ? { ...topic, status } : topic,
+          ),
+        },
+      };
+    });
+  };
+
+  const renameTopic = (subjectId: number, topicId: string) => {
+    const subjectState = subjectTopics[subjectId];
+    const topic = subjectState?.topics.find((item) => item.id === topicId);
+    if (!topic) return;
+
+    const nextName = window.prompt('Rename topic', topic.name);
+    if (nextName === null) return;
+
+    const trimmed = nextName.trim();
+    if (!trimmed) return;
+
+    setSubjectTopics((prev) => {
+      const existing = prev[subjectId];
+      if (!existing) return prev;
+
+      const normalized = normalizeTopicName(trimmed);
+      const hasDuplicate = existing.topics.some(
+        (item) => item.id !== topicId && normalizeTopicName(item.name) === normalized,
+      );
+      if (hasDuplicate) return prev;
+
+      return {
+        ...prev,
+        [subjectId]: {
+          ...existing,
+          topics: existing.topics.map((item) =>
+            item.id === topicId ? { ...item, name: trimmed } : item,
+          ),
+        },
+      };
+    });
+  };
+
+  const deleteTopic = (subjectId: number, topicId: string) => {
+    setSubjectTopics((prev) => {
+      const existing = prev[subjectId];
+      if (!existing) return prev;
+
+      return {
+        ...prev,
+        [subjectId]: {
+          ...existing,
+          topics: existing.topics.filter((topic) => topic.id !== topicId),
+        },
+      };
+    });
+  };
+
+  const renderTopicsScreen = () => (
+    <div className="max-w-5xl mx-auto mt-10 p-6 bg-white border rounded shadow">
+      <div className="flex justify-between items-center mb-6">
+        <button
+          onClick={() => setCurrentStep('uploads')}
+          className="px-6 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+        >
+          Back
+        </button>
+        <button
+          onClick={() => setCurrentStep('chat')}
+          className="px-6 py-2 bg-black text-white rounded hover:bg-gray-800"
+        >
+          Continue
+        </button>
+      </div>
+
+      <h2 className="text-lg text-gray-700 mb-6">
+        Review topics for each subject. Mark every topic as Completed, Do This Week, or Later. Only Do This Week topics are sent to the AI scheduler.
+      </h2>
+
+      <div className="space-y-5">
+        {subjects.map((subject, index) => {
+          const topicState = subjectTopics[subject.id];
+          const topics = topicState?.topics || [];
+
+          return (
+            <div key={subject.id} className="border rounded p-4 bg-gray-50">
+              <div className="flex justify-between items-center mb-3">
+                <div>
+                  <p className="font-medium text-gray-800">{index + 1}. {subject.name}</p>
+                  <p className="text-xs text-gray-600">
+                    {topics.length > 0
+                      ? `${topics.filter((topic) => topic.status === 'do-now').length} set for this week of ${topics.length} topics`
+                      : 'No topics yet. Add manually or upload a handout.'}
+                  </p>
+                </div>
+                {getHandout(subject.id) ? (
+                  <span className="text-xs text-green-700">Handout linked</span>
+                ) : (
+                  <span className="text-xs text-orange-700">No handout</span>
+                )}
+              </div>
+
+              {topics.length > 0 ? (
+                <div className="space-y-2 mb-3">
+                  {topics.map((topic) => (
+                    <div key={topic.id} className="flex items-center justify-between bg-white border rounded p-2">
+                      <p
+                        className={`text-left flex-1 pr-3 ${
+                          topic.status === 'completed'
+                            ? 'text-gray-400 line-through'
+                            : topic.status === 'later'
+                              ? 'text-gray-500'
+                              : 'text-gray-800'
+                        }`}
+                      >
+                        {topic.name}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => setTopicStatus(subject.id, topic.id, 'completed')}
+                            className={`text-xs px-2 py-1 rounded ${
+                              topic.status === 'completed'
+                                ? 'bg-green-600 text-white'
+                                : 'bg-green-100 text-green-700'
+                            }`}
+                          >
+                            Completed
+                          </button>
+                          <button
+                            onClick={() => setTopicStatus(subject.id, topic.id, 'do-now')}
+                            className={`text-xs px-2 py-1 rounded ${
+                              topic.status === 'do-now'
+                                ? 'bg-blue-600 text-white'
+                                : 'bg-blue-100 text-blue-700'
+                            }`}
+                          >
+                            Do This Week
+                          </button>
+                          <button
+                            onClick={() => setTopicStatus(subject.id, topic.id, 'later')}
+                            className={`text-xs px-2 py-1 rounded ${
+                              topic.status === 'later'
+                                ? 'bg-gray-600 text-white'
+                                : 'bg-gray-100 text-gray-700'
+                            }`}
+                          >
+                            Later
+                          </button>
+                        </div>
+                        <button
+                          onClick={() => renameTopic(subject.id, topic.id)}
+                          className="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                        >
+                          Rename
+                        </button>
+                        <button
+                          onClick={() => deleteTopic(subject.id, topic.id)}
+                          className="text-xs px-2 py-1 bg-red-500 text-white rounded hover:bg-red-600"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500 mb-3">
+                  No extracted topics yet. Add topics manually below.
+                </p>
+              )}
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newTopicBySubject[subject.id] || ''}
+                  onChange={(e) =>
+                    setNewTopicBySubject((prev) => ({
+                      ...prev,
+                      [subject.id]: e.target.value,
+                    }))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addTopicForSubject(subject.id);
+                    }
+                  }}
+                  placeholder="Add a topic"
+                  className="flex-1 border rounded p-2 text-black"
+                />
+                <button
+                  onClick={() => addTopicForSubject(subject.id)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -997,7 +1516,7 @@ const getHandout = (subjectId: number) => {
           score: subject.strength === null ? null : subject.strength + 1,
         })),
         studyPreferences,
-        handouts,
+        pendingTopics: buildPendingTopicsPayload(),
         conversation: conversationForApi,
         previousTimetable: latestTimetableFromChat ||
           timetable.map((row) =>
@@ -1292,7 +1811,7 @@ const generateTimetableWithAI = async (userSuggestion?: string) => {
           score: subject.strength === null ? null : subject.strength + 1,
         })),
         studyPreferences,
-        handouts,
+        pendingTopics: buildPendingTopicsPayload(),
         previousTimetable: timetable.map((row) =>
           row.map((cell) => ({ subject: cell.subject, topic: cell.topic }))
         ),
@@ -1608,6 +2127,7 @@ useEffect(()=> {
       <main>
         {currentStep === 'subjects' && renderSubjectsScreen()}
         {currentStep === 'uploads' && renderUploadsScreen()}
+        {currentStep === 'topics' && renderTopicsScreen()}
         {currentStep === 'chat' && renderChatScreen()}
         {currentStep === 'timetable' && renderTimetableView()}
         {currentStep === 'data' && currentData()}
