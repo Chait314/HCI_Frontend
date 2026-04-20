@@ -1460,7 +1460,7 @@ const openHandout = (handout: Handout) => {
   );
 })}
   </div>
-  <h2 className='p-3 font-bold'>Subjects and Topics Completed:</h2>
+  <h2 className='p-3 font-bold'>Subjects and Topics Completed :</h2>
   <div className="flex items-center pt-3 space-x-2 space-y-4">
     <div className="space-y-4">
   {timetable.map((row, rowIndex) => (
