@@ -974,6 +974,101 @@ const getHandout = (subjectId: number) => {
     });
   };
 
+  const [topicRangeBySubject, setTopicRangeBySubject] = useState<
+    Record<number, { start: number | null; end: number | null }>
+  >({});
+
+  const getRangeBounds = (
+    subjectId: number,
+    topicCount: number,
+  ): { start: number; end: number } | null => {
+    const range = topicRangeBySubject[subjectId];
+    if (!range) return null;
+    if (range.start === null || range.end === null) return null;
+
+    const min = Math.min(range.start, range.end);
+    const max = Math.max(range.start, range.end);
+
+    if (min < 0 || max >= topicCount) return null;
+    return { start: min, end: max };
+  };
+
+  const isTopicIndexInRange = (
+    subjectId: number,
+    topicIndex: number,
+    topicCount: number,
+  ) => {
+    const bounds = getRangeBounds(subjectId, topicCount);
+    if (!bounds) return false;
+
+    return topicIndex >= bounds.start && topicIndex <= bounds.end;
+  };
+
+  const selectTopicRangePoint = (
+    subjectId: number,
+    topicIndex: number,
+  ) => {
+    setTopicRangeBySubject((prev) => {
+      const existing = prev[subjectId];
+
+      if (!existing || existing.start === null || existing.end === null) {
+        return {
+          ...prev,
+          [subjectId]: { start: topicIndex, end: topicIndex },
+        };
+      }
+
+      if (existing.start === existing.end) {
+        return {
+          ...prev,
+          [subjectId]: { start: existing.start, end: topicIndex },
+        };
+      }
+
+      return {
+        ...prev,
+        [subjectId]: { start: topicIndex, end: topicIndex },
+      };
+    });
+  };
+
+  const clearTopicRangeForSubject = (subjectId: number) => {
+    setTopicRangeBySubject((prev) => ({
+      ...prev,
+      [subjectId]: { start: null, end: null },
+    }));
+  };
+
+  const setTopicRangeStatus = (
+    subjectId: number,
+    status: TopicProgressState,
+  ) => {
+    setSubjectTopics((prev) => {
+      const existing = prev[subjectId];
+      if (!existing) return prev;
+
+      const bounds = getRangeBounds(subjectId, existing.topics.length);
+      if (!bounds) return prev;
+
+      return {
+        ...prev,
+        [subjectId]: {
+          ...existing,
+          topics: existing.topics.map((topic, index) =>
+            index >= bounds.start && index <= bounds.end
+              ? { ...topic, status }
+              : topic,
+          ),
+        },
+      };
+    });
+
+    setTopicRangeBySubject((prev) => ({
+      ...prev,
+      [subjectId]: { start: null, end: null },
+    }));
+  };
+
   const renameTopic = (subjectId: number, topicId: string) => {
     const subjectState = subjectTopics[subjectId];
     const topic = subjectState?.topics.find((item) => item.id === topicId);
@@ -1047,6 +1142,10 @@ const getHandout = (subjectId: number) => {
         {subjects.map((subject, index) => {
           const topicState = subjectTopics[subject.id];
           const topics = topicState?.topics || [];
+          const rangeBounds = getRangeBounds(subject.id, topics.length);
+          const selectedRangeCount = rangeBounds
+            ? rangeBounds.end - rangeBounds.start + 1
+            : 0;
 
           return (
             <div key={subject.id} className="border rounded p-4 bg-gray-50">
@@ -1066,10 +1165,57 @@ const getHandout = (subjectId: number) => {
                 )}
               </div>
 
+              {topics.length > 0 && (
+                <div className="mb-3 rounded border bg-white p-3">
+                  <p className="text-xs text-gray-600 mb-2">
+                    Select adjacent topics by clicking <strong>Select</strong> on start and end items.
+                    {rangeBounds
+                      ? ` Selected range: ${rangeBounds.start + 1}-${rangeBounds.end + 1} (${selectedRangeCount} topics).`
+                      : ' No range selected yet.'}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setTopicRangeStatus(subject.id, 'completed')}
+                      disabled={!rangeBounds}
+                      className="text-xs px-2 py-1 rounded bg-green-600 text-white disabled:bg-green-300 disabled:cursor-not-allowed"
+                    >
+                      Mark Range Completed
+                    </button>
+                    <button
+                      onClick={() => setTopicRangeStatus(subject.id, 'do-now')}
+                      disabled={!rangeBounds}
+                      className="text-xs px-2 py-1 rounded bg-blue-600 text-white disabled:bg-blue-300 disabled:cursor-not-allowed"
+                    >
+                      Mark Range Do This Week
+                    </button>
+                    <button
+                      onClick={() => setTopicRangeStatus(subject.id, 'later')}
+                      disabled={!rangeBounds}
+                      className="text-xs px-2 py-1 rounded bg-gray-700 text-white disabled:bg-gray-400 disabled:cursor-not-allowed"
+                    >
+                      Mark Range Later
+                    </button>
+                    <button
+                      onClick={() => clearTopicRangeForSubject(subject.id)}
+                      className="text-xs px-2 py-1 rounded bg-gray-200 text-gray-700 hover:bg-gray-300"
+                    >
+                      Clear Range
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {topics.length > 0 ? (
                 <div className="space-y-2 mb-3">
-                  {topics.map((topic) => (
-                    <div key={topic.id} className="flex items-center justify-between bg-white border rounded p-2">
+                  {topics.map((topic, topicIndex) => (
+                    <div
+                      key={topic.id}
+                      className={`flex items-center justify-between border rounded p-2 ${
+                        isTopicIndexInRange(subject.id, topicIndex, topics.length)
+                          ? 'bg-blue-50 border-blue-300'
+                          : 'bg-white'
+                      }`}
+                    >
                       <p
                         className={`text-left flex-1 pr-3 ${
                           topic.status === 'completed'
@@ -1082,6 +1228,16 @@ const getHandout = (subjectId: number) => {
                         {topic.name}
                       </p>
                       <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => selectTopicRangePoint(subject.id, topicIndex)}
+                          className={`text-xs px-2 py-1 rounded ${
+                            isTopicIndexInRange(subject.id, topicIndex, topics.length)
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-blue-100 text-blue-700'
+                          }`}
+                        >
+                          Select
+                        </button>
                         <div className="flex items-center gap-1">
                           <button
                             onClick={() => setTopicStatus(subject.id, topic.id, 'completed')}
