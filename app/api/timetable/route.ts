@@ -71,6 +71,18 @@ type HandoutExtractionResult = {
   error?: string;
 };
 
+type SubjectAllocationMeta = {
+  name: string;
+  score: number;
+  weight: number;
+  index: number;
+};
+
+type SubjectTargetCount = {
+  name: string;
+  target: number;
+};
+
 const MAX_CHARS_PER_HANDOUT = 4000;
 const MAX_TOTAL_HANDOUT_CHARS = 24000;
 const VALID_WEEK_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -541,6 +553,78 @@ function sanitizeTimetableName(
   return toTitleCase(shortened);
 }
 
+function normalizeSubjectScore(score: number | null | undefined): number {
+  if (typeof score !== "number" || Number.isNaN(score)) return 3;
+  const rounded = Math.round(score);
+  return Math.max(1, Math.min(5, rounded));
+}
+
+function computeSubjectTargetCounts(
+  subjects: SubjectInput[],
+  allocatableSlots: number,
+): SubjectTargetCount[] {
+  const subjectMeta: SubjectAllocationMeta[] = subjects.map(
+    (subject, index) => {
+      const score = normalizeSubjectScore(subject.score);
+      return {
+        name: subject.name,
+        score,
+        weight: 6 - score,
+        index,
+      };
+    },
+  );
+
+  const totalWeight = subjectMeta.reduce(
+    (sum, subject) => sum + subject.weight,
+    0,
+  );
+  if (allocatableSlots <= 0 || totalWeight <= 0) {
+    return subjectMeta.map((subject) => ({
+      name: subject.name,
+      target: 0,
+    }));
+  }
+
+  const provisional = subjectMeta.map((subject) => {
+    const raw = (allocatableSlots * subject.weight) / totalWeight;
+    const floor = Math.floor(raw);
+    return {
+      ...subject,
+      floor,
+      remainder: raw - floor,
+    };
+  });
+
+  let remaining =
+    allocatableSlots -
+    provisional.reduce((sum, subject) => sum + subject.floor, 0);
+
+  const sortedRemainder = [...provisional].sort((a, b) => {
+    if (b.remainder !== a.remainder) return b.remainder - a.remainder;
+    if (a.score !== b.score) return a.score - b.score;
+    return a.index - b.index;
+  });
+
+  const extraByName = new Map<string, number>();
+  for (const subject of provisional) {
+    extraByName.set(subject.name, 0);
+  }
+
+  let cursor = 0;
+  while (remaining > 0 && sortedRemainder.length > 0) {
+    const subject = sortedRemainder[cursor % sortedRemainder.length];
+    extraByName.set(subject.name, (extraByName.get(subject.name) || 0) + 1);
+    remaining -= 1;
+    cursor += 1;
+  }
+
+  return provisional.map((subject) => ({
+    name: subject.name,
+    target: subject.floor + (extraByName.get(subject.name) || 0),
+  }));
+}
+
 export async function POST(req: Request) {
   const debugEnabled = process.env.TIMETABLE_DEBUG === "true";
   const apiUrl =
@@ -637,6 +721,14 @@ export async function POST(req: Request) {
       allSlotStarts.length > 0 ? allSlotStarts : [fallbackStart];
     const expectedRows = rowSlotStarts.length;
     const expectedCols = Math.max(1, orderedWorkingDays.length);
+    const allocatableSlots = rowSlotStarts.reduce((sum, rowStart) => {
+      const rowAllocatable = orderedWorkingDays.reduce((dayCount, day) => {
+        return (
+          dayCount + ((daySlotStarts[day] || []).includes(rowStart) ? 1 : 0)
+        );
+      }, 0);
+      return sum + rowAllocatable;
+    }, 0);
 
     if (subjects.length === 0) {
       return NextResponse.json(
@@ -649,6 +741,17 @@ export async function POST(req: Request) {
       count: subjects.length,
       subjects,
     });
+
+    const subjectTargetCounts = computeSubjectTargetCounts(
+      subjects,
+      allocatableSlots,
+    );
+    const subjectTargetCountByName = new Map(
+      subjectTargetCounts.map((entry) => [
+        entry.name.toLowerCase(),
+        entry.target,
+      ]),
+    );
 
     const handouts = Array.isArray(body.handouts)
       ? body.handouts.filter(
@@ -847,13 +950,14 @@ export async function POST(req: Request) {
       hasPendingTopics
         ? "Only use pending topics listed below. Do not schedule already completed topics."
         : "Use extracted handout content and filename hints to infer topics.",
+      `Inverse-ratio slot allocation targets (weights = 6 - score): ${subjectTargetCounts.map((entry) => `${entry.name}: ${entry.target}`).join(" | ")}`,
       'If a day does not have availability for a row time, return {"subject":"No Slot","topic":"Outside working hours"} for that cell.',
     ].join("\n");
 
     const systemPrompt =
       "You are an academic planning assistant. Build a weekly timetable from subjects, student strength scores, and handout content. " +
       "Handouts contain what should be studied in each subject. Scores are from 1 to 5 where 5 means strongest and 1 means weakest. " +
-      "Give more time and foundational topics to weaker subjects and advanced revision to stronger subjects. " +
+      "Allocate slots using inverse ratio of strength (weight = 6 - score), so weaker subjects get proportionally more slots. " +
       "When the user asks to edit or change a timetable, treat the previous timetable as the baseline and modify it instead of creating an unrelated new plan. " +
       'Return strict JSON only with this schema: {"name":"...","timetable":[[{"subject":"...","topic":"..."}]]}. ' +
       "The name must be Title Case, maximum 25 characters, include a subject hint, and contain only letters, numbers, and spaces. " +
@@ -1068,32 +1172,73 @@ export async function POST(req: Request) {
       );
     }
 
-    const weakestSubject = [...subjects].sort((a, b) => {
-      const scoreA = a.score === null ? 3 : a.score;
-      const scoreB = b.score === null ? 3 : b.score;
-      return scoreA - scoreB;
-    })[0];
+    const subjectOrderByStrength = subjects
+      .map((subject, index) => ({
+        name: subject.name,
+        score: normalizeSubjectScore(subject.score),
+        index,
+      }))
+      .sort((a, b) => {
+        if (a.score !== b.score) return a.score - b.score;
+        return a.index - b.index;
+      })
+      .map((subject) => subject.name);
+
+    const subjectPriorityRank = new Map(
+      subjectOrderByStrength.map((name, index) => [name.toLowerCase(), index]),
+    );
+    const knownSubjectNameByLower = new Map(
+      subjects.map((subject) => [subject.name.toLowerCase(), subject.name]),
+    );
+    const canonicalSubject = (value: string) => {
+      return knownSubjectNameByLower.get(value.trim().toLowerCase()) || null;
+    };
+
+    const pendingTopicPoolBySubject = new Map<string, string[]>();
+    for (const entry of pendingTopics) {
+      const canonical = canonicalSubject(entry.subjectName);
+      if (!canonical) continue;
+
+      const nextTopics = entry.topics
+        .filter((topic) => typeof topic === "string")
+        .map((topic) => topic.trim())
+        .filter(Boolean);
+
+      if (nextTopics.length === 0) continue;
+
+      const existing =
+        pendingTopicPoolBySubject.get(canonical.toLowerCase()) || [];
+      pendingTopicPoolBySubject.set(canonical.toLowerCase(), [
+        ...existing,
+        ...nextTopics,
+      ]);
+    }
+
+    const pendingTopicCursorBySubject = new Map<string, number>();
+    const nextTopicForSubject = (subjectName: string) => {
+      const key = subjectName.toLowerCase();
+      const topics = pendingTopicPoolBySubject.get(key) || [];
+
+      if (topics.length === 0) {
+        return `${subjectName} focused practice`;
+      }
+
+      const cursor = pendingTopicCursorBySubject.get(key) || 0;
+      const topic = topics[cursor % topics.length];
+      pendingTopicCursorBySubject.set(key, cursor + 1);
+      return topic;
+    };
 
     const correctedTimetable = normalized.timetable.map((row, rowIndex) =>
       row.map((cell, colIndex) => {
         const day = orderedWorkingDays[colIndex];
         const rowStart = rowSlotStarts[rowIndex];
         const hasAvailability = (daySlotStarts[day] || []).includes(rowStart);
-        const isNoSlotCell =
-          cell.subject.trim().toLowerCase() === "no slot" ||
-          cell.topic.trim().toLowerCase() === "outside working hours";
 
         if (!hasAvailability) {
           return {
             subject: "No Slot",
             topic: "Outside working hours",
-          };
-        }
-
-        if (hasAvailability && isNoSlotCell) {
-          return {
-            subject: weakestSubject?.name || "Study Session",
-            topic: "Planned study session",
           };
         }
 
@@ -1103,6 +1248,118 @@ export async function POST(req: Request) {
         };
       }),
     );
+
+    const allocatablePositions: Array<{
+      rowIndex: number;
+      colIndex: number;
+      canonicalSubject: string | null;
+      keepTopic: string;
+      keepable: boolean;
+    }> = [];
+
+    correctedTimetable.forEach((row, rowIndex) => {
+      row.forEach((cell, colIndex) => {
+        const day = orderedWorkingDays[colIndex];
+        const rowStart = rowSlotStarts[rowIndex];
+        const hasAvailability = (daySlotStarts[day] || []).includes(rowStart);
+        if (!hasAvailability) return;
+
+        const isNoSlotCell =
+          cell.subject.trim().toLowerCase() === "no slot" ||
+          cell.topic.trim().toLowerCase() === "outside working hours";
+        const canonical = isNoSlotCell ? null : canonicalSubject(cell.subject);
+
+        allocatablePositions.push({
+          rowIndex,
+          colIndex,
+          canonicalSubject: canonical,
+          keepTopic: cell.topic,
+          keepable: Boolean(canonical),
+        });
+      });
+    });
+
+    const targetBySubject = new Map<string, number>();
+    for (const subject of subjects) {
+      targetBySubject.set(
+        subject.name,
+        subjectTargetCountByName.get(subject.name.toLowerCase()) || 0,
+      );
+    }
+
+    const keptCountBySubject = new Map<string, number>();
+    for (const subject of subjects) {
+      keptCountBySubject.set(subject.name, 0);
+    }
+
+    const finalSubjectByPosition = new Map<string, string>();
+    const finalTopicByPosition = new Map<string, string>();
+
+    for (const slot of allocatablePositions) {
+      const key = `${slot.rowIndex}-${slot.colIndex}`;
+      const canonical = slot.canonicalSubject;
+      if (!slot.keepable || !canonical) continue;
+
+      const kept = keptCountBySubject.get(canonical) || 0;
+      const target = targetBySubject.get(canonical) || 0;
+      if (kept >= target) continue;
+
+      finalSubjectByPosition.set(key, canonical);
+      finalTopicByPosition.set(key, slot.keepTopic);
+      keptCountBySubject.set(canonical, kept + 1);
+    }
+
+    const getDeficitOrder = () => {
+      const entries = subjects
+        .map((subject) => {
+          const assigned = keptCountBySubject.get(subject.name) || 0;
+          const target = targetBySubject.get(subject.name) || 0;
+          const deficit = target - assigned;
+          return {
+            subjectName: subject.name,
+            deficit,
+            rank:
+              subjectPriorityRank.get(subject.name.toLowerCase()) ||
+              Number.MAX_SAFE_INTEGER,
+          };
+        })
+        .filter((entry) => entry.deficit > 0)
+        .sort((a, b) => {
+          if (b.deficit !== a.deficit) return b.deficit - a.deficit;
+          return a.rank - b.rank;
+        });
+
+      return entries;
+    };
+
+    for (const slot of allocatablePositions) {
+      const key = `${slot.rowIndex}-${slot.colIndex}`;
+      if (finalSubjectByPosition.has(key)) continue;
+
+      const deficits = getDeficitOrder();
+      if (deficits.length === 0) continue;
+
+      const chosen = deficits[0].subjectName;
+      finalSubjectByPosition.set(key, chosen);
+      finalTopicByPosition.set(key, nextTopicForSubject(chosen));
+      keptCountBySubject.set(chosen, (keptCountBySubject.get(chosen) || 0) + 1);
+    }
+
+    for (const slot of allocatablePositions) {
+      const key = `${slot.rowIndex}-${slot.colIndex}`;
+      const subject = finalSubjectByPosition.get(key);
+      if (!subject) continue;
+
+      const topic = limitTopicCount(
+        finalTopicByPosition.get(key) || nextTopicForSubject(subject),
+        studyPreferences.maxTopicsPerSlot,
+      );
+
+      correctedTimetable[slot.rowIndex][slot.colIndex] = {
+        subject,
+        topic,
+      };
+    }
 
     const subjectCounts = new Map<string, number>();
     correctedTimetable.forEach((row) => {
